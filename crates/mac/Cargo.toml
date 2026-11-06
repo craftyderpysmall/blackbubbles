@@ -15,6 +15,13 @@ flate2 = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 rusqlite = { workspace = true }
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = "0.3"
+objc2-event-kit = "0.3"
+objc2-photos = "0.3"
+objc2-app-kit = "0.3"
+objc2-core-foundation = "0.3"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 rusqlite = { workspace = true, features = ["bundled"] }
