@@ -58,11 +58,41 @@ export interface NoteSummary {
   title: string;
   snippet: string;
   modified: Timestamp;
+  /** Password-protected in Notes: body unreadable here, editing refused. */
+  locked: boolean;
 }
 export interface Note {
   summary: NoteSummary;
   body: string;
 }
+export interface ReminderList {
+  id: string;
+  title: string;
+  color: number;
+  writable: boolean;
+}
+export interface Reminder {
+  id: string;
+  list_id: string;
+  title: string;
+  notes: string | null;
+  due: Timestamp | null;
+  /** false: due on a whole day (no time). */
+  due_has_time: boolean;
+  completed: boolean;
+  completed_at: Timestamp | null;
+  /** 0 none, 1 high, 5 medium, 9 low. */
+  priority: number;
+}
+export interface NewReminder {
+  list_id: string | null;
+  title: string;
+  notes: string | null;
+  due: Timestamp | null;
+  due_has_time: boolean;
+  priority: number;
+}
+
 export interface VoiceMemo {
   id: string;
   title: string;
@@ -103,7 +133,8 @@ export type ServerEvent =
   | "CalendarChanged"
   | "NotesChanged"
   | "VoiceMemosChanged"
-  | "PhotosChanged";
+  | "PhotosChanged"
+  | "RemindersChanged";
 
 export type Status =
   | { state: "NotPaired" }
@@ -128,6 +159,7 @@ export interface Notifications {
   muted_chats: string[];
   calendar_reminders: boolean;
   reminder_minutes: number;
+  reminders_due: boolean;
   photos: boolean;
   notes: boolean;
   voice_memos: boolean;
@@ -138,6 +170,17 @@ export interface Notifications {
   quiet_hours: boolean;
   quiet_start: string;
   quiet_end: string;
+}
+
+/** Which Apple services BlackBubbles shows (tabs + notifications). */
+export interface Services {
+  messages: boolean;
+  photos: boolean;
+  notes: boolean;
+  calendar: boolean;
+  reminders: boolean;
+  voice_memos: boolean;
+  find_my: boolean;
 }
 
 export interface ConfigView {
@@ -151,6 +194,7 @@ export interface ConfigView {
     gmail: string[];
   };
   notifications: Notifications;
+  services: Services;
   beacon: { name: string; keys: number } | null;
 }
 
@@ -219,6 +263,12 @@ export const api = {
   createNote: (folder_id: string | null, body: string) =>
     call<{ id: string }, "Created">({ CreateNote: { folder_id, body } }, "Created"),
   updateNote: (id: string, body: string) => ok({ UpdateNote: { id, body } }),
+  reminderLists: () => call<ReminderList[], "ReminderLists">("ListReminderLists", "ReminderLists"),
+  reminders: (list_id: string | null, include_completed: boolean) =>
+    call<Reminder[], "Reminders">({ ListReminders: { list_id, include_completed } }, "Reminders"),
+  createReminder: (reminder: NewReminder) => call<Reminder, "Reminder">({ CreateReminder: reminder }, "Reminder"),
+  setReminderCompleted: (id: string, completed: boolean) => ok({ SetReminderCompleted: { id, completed } }),
+  deleteReminder: (id: string) => ok({ DeleteReminder: { id } }),
   voiceMemos: () => call<VoiceMemo[], "VoiceMemos">("ListVoiceMemos", "VoiceMemos"),
   albums: () => call<Album[], "Albums">("ListAlbums", "Albums"),
   assets: (album_id: string | null, offset: number, limit: number) =>
@@ -231,6 +281,7 @@ export const native = {
   pair: (uri: string, name: string) => invoke<ConfigView>("pair", { uri, name }),
   beaconSetup: (name: string) => invoke<ConfigView>("beacon_setup", { name }),
   saveNotifications: (notifications: Notifications) => invoke<ConfigView>("save_notifications", { notifications }),
+  saveServices: (services: Services) => invoke<ConfigView>("save_services", { services }),
   saveAutofill: (options: { enabled: boolean; from_server: boolean; notify: boolean; clear_after: number }) =>
     invoke<ConfigView>("save_autofill", { options }),
   autofillHttp: (enable: boolean) => invoke<ConfigView>("autofill_http", { enable }),
@@ -247,11 +298,6 @@ export const native = {
 /** A URL the webview can load a server blob from (served by Rust's `bb://` handler). */
 export function blobUrl(kind: BlobKind, id: string): string {
   return convertFileSrc(`blob/${kind}/${id}`, "bb");
-}
-
-export function tileUrl(): string {
-  // Leaflet fills {z}/{x}/{y}; keep the template braces unencoded.
-  return convertFileSrc("tile/", "bb") + "{z}%2F{x}%2F{y}";
 }
 
 export function onServerEvent(fn: (event: ServerEvent) => void): Promise<UnlistenFn> {

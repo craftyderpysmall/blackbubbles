@@ -1,7 +1,7 @@
 //! macOS data access for BlackBubbles.
 //!
 //! Messages, Notes and Voice Memos read Apple's SQLite stores directly (fast, and testable
-//! on any OS with fixtures). Calendar and Photos use EventKit and PhotoKit. Writes go
+//! on any OS with fixtures). Calendar, Reminders and Photos use EventKit and PhotoKit. Writes go
 //! through AppleScript or the frameworks, never by modifying Apple's databases.
 
 pub mod findmy;
@@ -17,6 +17,8 @@ pub mod anisette;
 pub mod calendar;
 #[cfg(target_os = "macos")]
 pub mod photos;
+#[cfg(target_os = "macos")]
+pub mod reminders;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -36,6 +38,8 @@ pub struct MacBackend {
     calendar: calendar::Calendar,
     #[cfg(target_os = "macos")]
     photos: photos::Photos,
+    #[cfg(target_os = "macos")]
+    reminders: reminders::Reminders,
 }
 
 impl MacBackend {
@@ -50,6 +54,8 @@ impl MacBackend {
             calendar: calendar::Calendar::new(),
             #[cfg(target_os = "macos")]
             photos: photos::Photos::new(),
+            #[cfg(target_os = "macos")]
+            reminders: reminders::Reminders::new(),
         })
     }
 
@@ -60,6 +66,11 @@ impl MacBackend {
             Request::ListEvents { from, to } => self.calendar.events(from, to),
             Request::CreateEvent(new) => self.calendar.create(&new),
             Request::DeleteEvent { id } => self.calendar.delete(&id),
+            Request::ListReminderLists => self.reminders.lists(),
+            Request::ListReminders { list_id, include_completed } => self.reminders.reminders(list_id.as_deref(), include_completed),
+            Request::CreateReminder(new) => self.reminders.create(&new),
+            Request::SetReminderCompleted { id, completed } => self.reminders.set_completed(&id, completed),
+            Request::DeleteReminder { id } => self.reminders.delete(&id),
             Request::ListAlbums => self.photos.albums(),
             Request::ListAssets { album_id, offset, limit } => self.photos.assets(album_id.as_deref(), offset, limit),
             Request::GetBlob { kind: BlobKind::PhotoThumbnail, id, offset, len } => self.photos.image(&id, 320.0, offset, len),
@@ -70,7 +81,7 @@ impl MacBackend {
 
     #[cfg(not(target_os = "macos"))]
     fn calendar_or_photos(&self, _req: Request) -> Result<Response, ApiError> {
-        Err(ApiError::unsupported("Calendar and Photos outside macOS"))
+        Err(ApiError::unsupported("Calendar, Reminders and Photos outside macOS"))
     }
 }
 
@@ -87,7 +98,10 @@ impl Backend for MacBackend {
             Request::ListNotes { folder_id } => self.notes.list(folder_id.as_deref()),
             Request::GetNote { id } => self.notes.get(&id),
             Request::CreateNote { folder_id, body } => notes::Notes::create(folder_id.as_deref(), &body),
-            Request::UpdateNote { id, body } => notes::Notes::update(&id, &body),
+            Request::UpdateNote { id, body } => {
+                self.notes.ensure_unlocked(&id)?;
+                notes::Notes::update(&id, &body)
+            }
             Request::ListVoiceMemos => self.voice_memos.list(),
             Request::ListFindMyDevices => self.findmy.list(),
             Request::RegisterBeacon { id, name, private_keys } => self.findmy.register_beacon(&id, &name, &private_keys),
@@ -104,6 +118,7 @@ impl Backend for MacBackend {
         #[cfg(target_os = "macos")]
         {
             self.calendar.watch(sink.clone());
+            self.reminders.watch(sink.clone());
             self.photos.watch(sink);
         }
     }

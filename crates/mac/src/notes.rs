@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use bb_proto::{ApiError, Event, EventSink, Note, NoteFolder, NoteSummary, Response};
+use bb_proto::{ApiError, ErrorCode, Event, EventSink, Note, NoteFolder, NoteSummary, Response};
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::util::{self, apple_secs_to_unix_ms, columns, escape_html, sql_err};
@@ -214,6 +214,7 @@ impl Notes {
                 title: r.get::<_, Option<String>>(1)?.unwrap_or_else(|| "New Note".into()),
                 snippet: if locked != 0 { "Locked".into() } else { r.get::<_, Option<String>>(2)?.unwrap_or_default() },
                 modified: apple_secs_to_unix_ms(r.get::<_, Option<f64>>(4)?.unwrap_or(0.0)),
+                locked: locked != 0,
             },
             locked != 0,
         ))
@@ -251,6 +252,17 @@ impl Notes {
             };
             Ok(Response::Note(Note { summary, body }))
         })
+    }
+
+    /// Locked notes are encrypted with the user's Notes password; never overwrite one
+    /// with the placeholder text the client was shown.
+    pub fn ensure_unlocked(&self, id: &str) -> Result<(), ApiError> {
+        match self.get(id)? {
+            Response::Note(note) if note.summary.locked => {
+                Err(ApiError::new(ErrorCode::PermissionDenied, "This note is locked. Unlock it in Notes on your Mac to edit it."))
+            }
+            _ => Ok(()),
+        }
     }
 
     pub fn create(folder_id: Option<&str>, body: &str) -> Result<Response, ApiError> {
@@ -382,6 +394,9 @@ mod tests {
         assert_eq!(note.body, "Groceries\nmilk");
         let Response::Note(locked) = notes.get(&list[1].id).unwrap() else { panic!() };
         assert!(locked.body.contains("locked"));
+        assert!(locked.summary.locked && !list[0].locked);
+        assert!(notes.ensure_unlocked(&list[0].id).is_ok());
+        assert_eq!(notes.ensure_unlocked(&list[1].id).unwrap_err().code, ErrorCode::PermissionDenied);
         let _ = std::fs::remove_dir_all(dir);
     }
 

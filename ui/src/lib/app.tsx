@@ -1,8 +1,22 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { onStatus, type Bootstrap, type ConfigView, type Status } from "./bb";
 
-export type Tab = "messages" | "photos" | "notes" | "calendar" | "voice" | "findmy" | "settings";
-export const TABS: Tab[] = ["messages", "photos", "notes", "calendar", "voice", "findmy", "settings"];
+import type { Services } from "./bb";
+
+export type Tab = "messages" | "photos" | "notes" | "calendar" | "reminders" | "voice" | "findmy" | "settings";
+
+/** The service setting behind each tab (Settings is always shown). */
+export const TAB_SERVICE: Record<Exclude<Tab, "settings">, keyof Services> = {
+  messages: "messages",
+  photos: "photos",
+  notes: "notes",
+  calendar: "calendar",
+  reminders: "reminders",
+  voice: "voice_memos",
+  findmy: "find_my",
+};
+
+export const tabShown = (tab: Tab, services: Services) => tab === "settings" || services[TAB_SERVICE[tab]];
 
 export interface Toast {
   id: number;
@@ -35,7 +49,7 @@ const TOAST_MS = 4500;
 function devTab(name: string | null): Tab | null {
   if (!name) return null;
   const n = name.toLowerCase().replace(/[\s_-]/g, "");
-  const map: Record<string, Tab> = { messages: "messages", photos: "photos", notes: "notes", calendar: "calendar", voice: "voice", voicememos: "voice", findmy: "findmy", settings: "settings" };
+  const map: Record<string, Tab> = { messages: "messages", photos: "photos", notes: "notes", calendar: "calendar", reminders: "reminders", voice: "voice", voicememos: "voice", findmy: "findmy", settings: "settings" };
   return map[n] ?? null;
 }
 

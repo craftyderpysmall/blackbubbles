@@ -12,17 +12,22 @@ It is not based on BlueBubbles. BlackBubbles has its own server, protocol and cl
 |---|---|---|
 | **Messages** | iMessage and SMS chats, history, sending text and files (drag & drop), images inline | Reads `chat.db` directly and sends through AppleScript |
 | **Photos** | Your library and albums in a fast thumbnail grid, full-size viewer, save to disk | PhotoKit, rendered to JPEG (no HEIC on the client) |
-| **Notes** | Folders, search, read and edit, new notes | Reads `NoteStore.sqlite`; edits go through AppleScript |
-| **Calendar** | Month grid, agenda, create and delete events | EventKit |
+| **Notes** | Folders, search, read and edit, new notes. Locked notes are listed but stay unreadable and read-only | Reads `NoteStore.sqlite`; edits go through AppleScript |
+| **Calendar** | Month grid, agenda, create and delete events; reminders with a date show on their day | EventKit |
+| **Reminders** | Today / Scheduled / All / Completed, your lists, add, tick off, delete; timed reminders alert on your iPhone too | EventKit (the Reminders app's store) |
 | **Voice Memos** | List, play, seek, save | Recordings database and audio files |
 | **Find My** | Your Apple devices on a map, plus this Linux PC | iCloud Find My, and Offline-Finding reports for the beacon |
 | **Autofill** | Verification codes and links go straight to your clipboard | Built-in [linuxautofill](https://github.com/craftyderpysmall/linuxautofill), see below |
+
+### Services
+
+Settings → Services chooses which of Messages, Photos, Notes, Calendar, Reminders, Voice Memos and Find My BlackBubbles shows (all on by default). A hidden service loses its tab and its notifications; autofill is unaffected.
 
 ### Notifications
 
 Settings → Notifications decides exactly what reaches your desktop:
 - **Messages:** iMessage and SMS separately, with or without the sender and a preview. You can skip code-only texts (autofill already shows those), stay quiet while the window is focused, and mute single conversations from their header.
-- **Other alerts:** calendar reminders N minutes before an event, low battery on any Find My device, this PC's beacon being located, new photos, notes or voice memos, and the Mac connection dropping or coming back.
+- **Other alerts:** calendar reminders N minutes before an event, Reminders when they're due, low battery on any Find My device, this PC's beacon being located, new photos, notes or voice memos, and the Mac connection dropping or coming back.
 - **Quiet hours:** for example 22:00–07:00.
 
 Notifications come from whichever BlackBubbles process owns autofill (the background daemon if it runs, otherwise the window). The daemon picks up setting changes live.
@@ -60,7 +65,7 @@ Only public keys reach the beacon service. Private keys live on your client and 
 The UI follows the "Neutral" desktop theme:
 - **Look:** monochrome dark and shadcn-style. Colour is used only for state (status dots, low battery, email-address warnings).
 - **Shape:** 16 px cards, 10 px controls and pill buttons, with one inverted white primary action per surface.
-- **Type and icons:** Inter, Lucide icons and Noto Color Emoji, all bundled (OFL, ISC and OFL licences). Emoji render in colour everywhere, including flags, skin tones and ZWJ sequences.
+- **Type and icons:** Inter and Lucide icons are bundled (OFL and ISC licences). Emoji render in colour everywhere, including flags, skin tones and ZWJ sequences, using the system colour emoji font (Apple Color Emoji, or Noto Color Emoji, a Linux package dependency). A bundled Noto subset is the fallback.
 - **Motion:** quick decelerating enter and accelerating exit animations.
 - **Responsive:** the rail collapses to icons, and Messages, Notes and Find My go single-pane on narrow windows. Calendar stacks its agenda under the month and shrinks events to dots.
 

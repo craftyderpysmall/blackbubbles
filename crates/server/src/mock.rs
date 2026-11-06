@@ -17,6 +17,7 @@ struct State {
     messages: Vec<Message>,
     events: Vec<CalendarEvent>,
     notes: Vec<Note>,
+    reminders: Vec<Reminder>,
     next_id: u64,
 }
 
@@ -96,12 +97,37 @@ impl MockBackend {
             note("n1", "f1", "Groceries", "Groceries\n- oat milk\n- coffee\n- limes", now - DAY),
             note("n2", "f1", "Ideas", "Ideas\nBlackBubbles but faster", now - 3 * DAY),
             note("n3", "f2", "Wi-Fi", "Wi-Fi\nnetwork: home5g", now - 30 * DAY),
+            locked_note("n4", "f1", "Diary", now - 5 * DAY),
+        ];
+        let reminders = vec![
+            reminder("r1", "inbox", "Call the bank", Some((today + 10 * HOUR, true)), false, 1),
+            reminder("r2", "inbox", "Pay rent", Some((today - DAY, false)), false, 0),
+            reminder("r3", "inbox", "Pick up package 📦", Some((today + DAY + 17 * HOUR, true)), false, 0),
+            reminder("r4", "groceries", "Oat milk", None, false, 0),
+            reminder("r5", "groceries", "Coffee beans ☕", None, false, 5),
+            reminder("r6", "inbox", "Renew passport", Some((today - 3 * DAY, false)), true, 0),
+            // Text-default emoji + VS16: a rendering regression check.
+            reminder("r7", "inbox", "Flight to Lisbon \u{2708}\u{fe0f}", Some((today + 2 * DAY, false)), false, 0),
         ];
         Self {
-            state: Mutex::new(State { chats, messages, events, notes, next_id: 100 }),
+            state: Mutex::new(State { chats, messages, events, notes, reminders, next_id: 100 }),
             code_interval,
             sink: Mutex::default(),
         }
+    }
+}
+
+fn reminder(id: &str, list: &str, title: &str, due: Option<(i64, bool)>, completed: bool, priority: u8) -> Reminder {
+    Reminder {
+        id: id.into(),
+        list_id: list.into(),
+        title: title.into(),
+        notes: None,
+        due: due.map(|d| d.0),
+        due_has_time: due.is_some_and(|d| d.1),
+        completed,
+        completed_at: completed.then(now_ms),
+        priority,
     }
 }
 
@@ -126,9 +152,18 @@ fn note(id: &str, folder: &str, title: &str, body: &str, modified: i64) -> Note 
             title: title.into(),
             snippet: body.lines().nth(1).unwrap_or_default().into(),
             modified,
+            locked: false,
         },
         body: body.into(),
     }
+}
+
+fn locked_note(id: &str, folder: &str, title: &str, modified: i64) -> Note {
+    let mut n = note(id, folder, title, "", modified);
+    n.summary.snippet = "Locked".into();
+    n.summary.locked = true;
+    n.body = "🔒 This note is locked. Unlock it in Notes on your Mac.".into();
+    n
 }
 
 /// A 24-bit BMP gradient, so the mock needs no image encoder.
@@ -314,6 +349,9 @@ impl Backend for MockBackend {
             }
             Request::UpdateNote { id, body } => {
                 let n = state.notes.iter_mut().find(|n| n.summary.id == id).ok_or_else(|| ApiError::not_found("note"))?;
+                if n.summary.locked {
+                    return Err(ApiError::new(ErrorCode::PermissionDenied, "This note is locked. Unlock it in Notes on your Mac to edit it."));
+                }
                 let updated = note(&id, &n.summary.folder_id.clone(), body.lines().next().unwrap_or(""), &body, now_ms());
                 *n = updated;
                 self.emit_later(Event::NotesChanged);
@@ -330,6 +368,47 @@ impl Backend for MockBackend {
                     })
                     .collect(),
             ),
+            Request::ListReminderLists => Response::ReminderLists(vec![
+                ReminderList { id: "inbox".into(), title: "Reminders".into(), color: 0xff9500, writable: true },
+                ReminderList { id: "groceries".into(), title: "Groceries".into(), color: 0x34c759, writable: true },
+            ]),
+            Request::ListReminders { list_id, include_completed } => Response::Reminders(
+                state
+                    .reminders
+                    .iter()
+                    .filter(|r| list_id.as_ref().is_none_or(|l| *l == r.list_id) && (include_completed || !r.completed))
+                    .cloned()
+                    .collect(),
+            ),
+            Request::CreateReminder(new) => {
+                state.next_id += 1;
+                let created = Reminder {
+                    id: format!("r{}", state.next_id),
+                    list_id: new.list_id.unwrap_or_else(|| "inbox".into()),
+                    title: new.title,
+                    notes: new.notes,
+                    due: new.due,
+                    due_has_time: new.due.is_some() && new.due_has_time,
+                    completed: false,
+                    completed_at: None,
+                    priority: new.priority,
+                };
+                state.reminders.push(created.clone());
+                self.emit_later(Event::RemindersChanged);
+                Response::Reminder(created)
+            }
+            Request::SetReminderCompleted { id, completed } => {
+                let r = state.reminders.iter_mut().find(|r| r.id == id).ok_or_else(|| ApiError::not_found("reminder"))?;
+                r.completed = completed;
+                r.completed_at = completed.then(now_ms);
+                self.emit_later(Event::RemindersChanged);
+                Response::Ok
+            }
+            Request::DeleteReminder { id } => {
+                state.reminders.retain(|r| r.id != id);
+                self.emit_later(Event::RemindersChanged);
+                Response::Ok
+            }
             Request::ListAlbums => Response::Albums(vec![
                 Album { id: "all".into(), title: "Recents".into(), count: 120 },
                 Album { id: "fav".into(), title: "Favorites".into(), count: 12 },

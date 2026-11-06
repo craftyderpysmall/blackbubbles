@@ -6,7 +6,7 @@ pkgdesc="Messages, Photos, Notes, Calendar, Voice Memos and Find My from your Ma
 arch=('x86_64' 'aarch64')
 url="https://github.com/craftyderpysmall/blackbubbles"
 license=('MIT')
-depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3' 'dbus' 'alsa-lib' 'libxkbcommon' 'wayland')
+depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3' 'noto-fonts-emoji' 'dbus' 'alsa-lib' 'libxkbcommon' 'wayland')
 optdepends=('wl-clipboard: Wayland clipboard for autofill'
             'wtype: click-to-paste codes on wlroots/KDE'
             'ydotool: click-to-paste codes on GNOME'

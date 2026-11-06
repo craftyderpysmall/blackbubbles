@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
-import { Bell, Check, Info, Keyboard, Link2, Mail, Phone, Plus, Radar, Trash2, type LucideIcon } from "lucide-react";
-import { errorText, native, type ConfigView, type Notifications } from "@/lib/bb";
+import { AudioLines, Bell, Calendar, Check, Image, Info, Keyboard, LayoutGrid, Link2, ListChecks, Mail, MapPin, MessageCircle, NotebookPen, Phone, Plus, Radar, Trash2, type LucideIcon } from "lucide-react";
+import { errorText, native, type ConfigView, type Notifications, type Services } from "@/lib/bb";
 import { useApp } from "@/lib/app";
 import { cn } from "@/lib/utils";
 import { Badge, Button, Card, Input, Switch } from "@/components/ui";
@@ -18,9 +18,9 @@ function Section({ icon: Icon, title, description, children }: { icon: LucideIco
   );
 }
 
-function Group({ title, children }: { title: string; children: ReactNode }) {
+function Group({ title, children, off }: { title: string; children: ReactNode; off?: boolean }) {
   return (
-    <div className="mt-3 first:mt-0">
+    <div className={cn("mt-3 first:mt-0", off && "pointer-events-none opacity-40")} title={off ? `${title} is hidden in Services` : undefined}>
       <div className="mb-0.5 px-1 text-[11px] font-medium tracking-wide text-subtle uppercase">{title}</div>
       <div className="divide-y divide-border">{children}</div>
     </div>
@@ -66,6 +66,7 @@ export default function SettingsPage() {
         <h1 className="px-1 pt-1 text-[20px] font-semibold tracking-tight text-fg">Settings</h1>
         <Connection />
         <SendingAddress />
+        <ServiceSettings />
         <NotificationSettings />
         <AutofillSettings />
         {boot.platform === "linux" && <BeaconSettings />}
@@ -164,8 +165,39 @@ function SendingAddress() {
   );
 }
 
+const SERVICES: [keyof Services, LucideIcon, string, string][] = [
+  ["messages", MessageCircle, "Messages", "iMessage and SMS"],
+  ["photos", Image, "Photos", "Library and albums"],
+  ["notes", NotebookPen, "Notes", ""],
+  ["calendar", Calendar, "Calendar", "Events (and reminders with a date, if Reminders is on)"],
+  ["reminders", ListChecks, "Reminders", "The Reminders app's lists"],
+  ["voice_memos", AudioLines, "Voice Memos", ""],
+  ["find_my", MapPin, "Find My", "Your devices and this PC"],
+];
+
+function ServiceSettings() {
+  const { config } = useApp();
+  const save = useSaver();
+  const v = config.services;
+  return (
+    <Section icon={LayoutGrid} title="Services" description="Choose which Apple services BlackBubbles shows. A hidden service gets no tab and no notifications. Autofill keeps working either way.">
+      <div className="divide-y divide-border">
+        {SERVICES.map(([key, Icon, name, hint]) => (
+          <div key={key} className="flex items-center gap-3">
+            <Icon className="size-4 shrink-0 text-muted" />
+            <div className="min-w-0 flex-1">
+              <Switch checked={v[key]} onChange={(on) => void save(native.saveServices({ ...v, [key]: on }))} label={name} description={hint || undefined} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
 function NotificationSettings() {
   const { config } = useApp();
+  const on = config.services;
   const save = useSaver();
   const n = config.notifications;
   const set = (patch: Partial<Notifications>) => void save(native.saveNotifications({ ...n, ...patch }));
@@ -177,7 +209,7 @@ function NotificationSettings() {
     <Section icon={Bell} title="Notifications" description="Choose exactly what shows up as a desktop notification.">
       {sw("enabled", "Desktop notifications", "Turn everything off with one switch")}
       <div className={cn(!n.enabled && "pointer-events-none opacity-40")}>
-        <Group title="Messages">
+        <Group title="Messages" off={!on.messages}>
           {sw("messages", "New messages")}
           <Nested disabled={!n.messages}>
             {sw("imessage", "iMessage")}
@@ -198,13 +230,16 @@ function NotificationSettings() {
             </div>
           </Nested>
         </Group>
-        <Group title="Calendar">
+        <Group title="Calendar" off={!on.calendar}>
           {sw("calendar_reminders", "Event reminders")}
           <Nested disabled={!n.calendar_reminders}>
             <NumberField label="Remind me before events start" suffix="min" value={n.reminder_minutes} min={0} max={240} onChange={(v) => set({ reminder_minutes: v })} />
           </Nested>
         </Group>
-        <Group title="Find My">
+        <Group title="Reminders" off={!on.reminders}>
+          {sw("reminders_due", "Reminders when they're due", "At their time; date-only ones at 09:00")}
+        </Group>
+        <Group title="Find My" off={!on.find_my}>
           {sw("low_battery", "Low battery on a device")}
           <Nested disabled={!n.low_battery}>
             <NumberField label="Below" suffix="%" value={n.low_battery_percent} min={5} max={50} onChange={(v) => set({ low_battery_percent: v })} />
@@ -212,9 +247,9 @@ function NotificationSettings() {
           {sw("beacon_located", "This PC was located", "When nearby Apple devices report the beacon")}
         </Group>
         <Group title="Library">
-          {sw("photos", "New photos")}
-          {sw("notes", "Notes changed on the Mac")}
-          {sw("voice_memos", "New voice memos")}
+          {sw("photos", "New photos", undefined, !on.photos)}
+          {sw("notes", "Notes changed on the Mac", undefined, !on.notes)}
+          {sw("voice_memos", "New voice memos", undefined, !on.voice_memos)}
         </Group>
         <Group title="System">
           {sw("connection", "Connection lost / restored", "After the Mac has been unreachable for 90 s")}

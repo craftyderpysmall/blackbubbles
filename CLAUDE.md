@@ -10,9 +10,10 @@ How it fits together:
 - **Rust side** (`crates/client`, binary `blackbubbles`): same CLI modes as before (`daemon`, `pair`, `beacon-setup`; no subcommand opens the window). `commands.rs` holds `AppState` and every Tauri command.
 - **Requests:** the frontend calls the `request` command with proto JSON (serde's externally tagged enums, e.g. `{"ListChats":{"limit":300,"before":null}}`; unit variants are bare strings like `"ListCalendars"`). Types are mirrored by hand in `ui/src/lib/bb.ts`; **keep them in sync with `crates/proto`**.
 - **Events:** server `Event`s are emitted as `server-event` and connection changes as `status`. `ui/src/lib/events.ts` applies them straight to the React Query cache, so nothing polls.
-- **Media:** the `bb://` scheme (`blob.rs`) serves `blob/<Kind>/<id>` from chunked `GetBlob` with a 160 MB LRU and a 24-request cap, and proxies OSM tiles (`tile/z/x/y`) with a proper User-Agent and a 7-day disk cache. The frontend builds URLs with `convertFileSrc(path, "bb")`.
+- **Media:** the `bb://` scheme (`blob.rs`) serves `blob/<Kind>/<id>` from chunked `GetBlob` with a 160 MB LRU and a 24-request cap, and proxies OpenFreeMap (`map/<path>`: vector tiles, style, fonts, sprites) with a proper User-Agent and a disk cache (tiles 7 days, style JSON 1 day; stale copies serve offline). MapLibre's `transformRequest` rewrites `tiles.openfreemap.org` URLs to it. The frontend builds URLs with `convertFileSrc(path, "bb")`.
 - **Uploads:** attachments go to `send_attachment` as a raw-body invoke (`x-chat`/`x-name` headers). The window sets `dragDropEnabled: false` so HTML5 drag-and-drop gives File objects.
 - **Audio:** voice memos play through rodio on its own thread (`audio.rs`), polled by the UI 4×/s while loaded. This avoids depending on GStreamer codecs in WebKitGTK.
+- **Emoji:** the font stack prefers a complete system colour emoji font (Apple Color Emoji; Noto Color Emoji is a Linux package dependency). The bundled `@fontsource/noto-color-emoji` subsets are renamed "BlackBubbles Emoji" and only a fallback, because split subsets can't shape emoji + U+FE0F (✈️ ❤️ drew boxes). The mock's reminder "Flight to Lisbon ✈️" is the regression check.
 - **Fonts:** Inter, JetBrains Mono and Noto Color Emoji come from `@fontsource` (licences in `ui/licenses/`) (imported in `main.tsx`, not CSS, so the `woff2Only` Vite plugin can drop the `.woff` fallbacks). The emoji font is split by unicode-range, so only used glyphs load.
 - **Reconnecting:** `Client::close()` stops the old connection task and the notifier's poll loop. (The egui client leaked both after re-pairing.)
 
@@ -48,11 +49,15 @@ When the owner gets Mac access, follow `docs/MAC_SETUP.md` with them and fix wha
 
 Verified on Linux against the mock server, **with the Tauri client** (2026-11-06):
 - pairing from the CLI and from Settings; re-pairing closes the old connection
-- every tab renders, including colour emoji (flags, skin tones, ZWJ) and the bb:// thumbnails and map tiles
+- every tab renders, including colour emoji (flags, skin tones, ZWJ, ✈️-style VS16) and the bb:// thumbnails and the vector map
 - sending a text: optimistic bubble, then the server echo, and the chat list reorders
 - note edit and Ctrl+S save; calendar new-event dialog; photo lightbox with arrow keys
 - voice memo play/pause/progress
 - the per-chat mute bell (writes `muted_chats`)
+- Reminders (protocol 3, mock): lists and smart lists, tick off, quick add, creating one from the Calendar dialog, reminders on calendar days
+- locked notes: lock in the list, read-only panel; the server-side edit guard is unit-tested
+- Services: hiding Photos removes its tab and writes `[services]`
+- Find My: OpenFreeMap map through the proxy, floating list, selecting a device (marker, ring, detail card)
 - settings write the mode-600 config
 - desktop notifications from the window process; the window becomes secondary while `blackbubbles daemon` holds `primary.lock`
 - responsive layouts at 700px (single pane) and 900px (stacked calendar, dot cells)
@@ -60,6 +65,10 @@ Verified on Linux against the mock server, **with the Tauri client** (2026-11-06
 Verified only with the old egui client; the Rust code is unchanged, but these haven't been re-clicked in the Tauri UI:
 - autofill over HTTP and server events, including clipboard restore on SIGTERM
 - beacon registration
+
+Not exercised yet:
+- the Mac's EventKit Reminders code (`crates/mac/src/reminders.rs`): type-checked for macOS, never run
+- Reminders-due desktop notifications (the timing rule is unit-tested, not observed on screen)
 
 Not exercised yet in the Tauri UI:
 - attachment send (button and drag-and-drop)
@@ -71,7 +80,7 @@ Not exercised yet in the Tauri UI:
 ## Layout
 
 ```
-crates/proto     wire protocol: postcard frames, Backend trait (PROTOCOL_VERSION = 2)
+crates/proto     wire protocol: postcard frames, Backend trait (PROTOCOL_VERSION = 3)
 crates/net       self-signed TLS + SHA-256 pinning, pairing URIs, framed WebSocket
 crates/server    bbd: pairing/devices, sessions, --mock backend (runs anywhere)
 crates/mac       macOS data: chat.db, NoteStore.sqlite, Voice Memos, EventKit, PhotoKit, AOSKit, Find My aggregation
@@ -89,7 +98,7 @@ docs/            MAC_SETUP.md, LINUX_SETUP.md
 ```sh
 (cd ui && npm ci && npm run build)          # type-check + bundle the UI into ui/dist
 cargo build --workspace --features bb-client/custom-protocol
-cargo test --workspace                       # 45 tests; all must pass
+cargo test --workspace                       # ~48 tests; all must pass
 cargo run -p bb-server -- --data-dir /tmp/bbd pair --host 127.0.0.1 --port 17878
 cargo run -p bb-server -- --data-dir /tmp/bbd run --mock --mock-codes 20 --bind 127.0.0.1:17878
 BLACKBUBBLES_CONFIG_DIR=/tmp/bbc cargo run -p bb-client -- pair 'blackbubbles://…'
@@ -106,7 +115,7 @@ BLACKBUBBLES_CONFIG_DIR=/tmp/bbc cargo run -p bb-client --features custom-protoc
   - `BLACKBUBBLES_FORCE_WIDTH=<px>`: caps the UI root's width, to test responsive layouts on a tiling window manager.
 - **macOS type-check from Linux:** the system Rust has no rustup. Install rustup into a scratch dir and add `aarch64-apple-darwin`. Point `CC_aarch64_apple_darwin` at a stub script that only creates the `-o` output file. Then run `cargo check --target aarch64-apple-darwin --workspace`. CI's macOS job is the real build-and-link check.
 - **Screenshots (owner's desktop is Hyprland):** get the window geometry from `hyprctl clients -j` (class `blackbubbles`), then capture with `grim -g "<x>,<y> <w>x<h>"`. The Hyprland config is Lua, so `hyprctl dispatch` uses `hl.dsp.*` syntax.
-- **Driving the UI:** there's no click injection (no ydotool), but `wtype` sends keys to the focused window. **Check `hyprctl activewindow` is `blackbubbles` before every `wtype`.** Tab moves through the rail (8 stops), then the page. The chat composer and the note editor autofocus.
+- **Driving the UI:** there's no click injection (no ydotool), but `wtype` sends keys to the focused window. **Check `hyprctl activewindow` is `blackbubbles` before every `wtype`.** Tab moves through the rail (9 stops: 8 tabs + status), then the page. The map's markers and attribution links come before the floating Find My list (the first device row is stop 22). The chat composer and the note editor autofocus.
 - **Don't** `pkill -f` a pattern that appears in your own command line (it kills the shell). `pkill -x blackbubbles` also kills a running `blackbubbles daemon`.
 - **Clipboard caution:** autofill tests touch the owner's real Wayland clipboard. Save it with `wl-paste` first and confirm it was restored afterwards. For UI tests, set `[autofill] enabled = false` in the scratch config.
 - **Sound:** mock voice memos are tones. Mute with `pactl set-sink-mute @DEFAULT_SINK@ 1` while testing playback, and unmute afterwards.
@@ -148,11 +157,12 @@ Screens:
   - Drag-and-drop to send.
   - Header badges show the service and `my_address` (email flagged), plus a per-chat mute bell.
 - **Photos:** album pills, lazy thumbnails with an LRU cache, video and favourite badges, lightbox with arrow keys and Save.
-- **Notes:** folder chips, search, plain-text editor (first line is the title), Ctrl/⌘+S, "Edited/Saved" badge, New note.
-- **Calendar:** month grid with today as a pill, day agenda, delete, new-event modal (title, location, all day, times, calendar).
+- **Notes:** folder chips, search, plain-text editor (first line is the title), Ctrl/⌘+S, "Edited/Saved" badge, New note. Locked (password-protected) notes show a lock and a read-only panel; their bodies are encrypted with the owner's Notes password, so `bbd` never decrypts them and refuses `UpdateNote` on them (`NoteSummary.locked`).
+- **Calendar:** month grid with today as a pill, day agenda, delete. Reminders with a due date show on their day as hollow rings (events are dots) and in the agenda with a checkbox. The "New" dialog switches between Event (title, location, notes, all day, times, calendar) and Reminder (title, notes, date, optional time, list, priority).
+- **Reminders:** Today (includes overdue) / Scheduled (grouped by day) / All (grouped by list) / Completed tiles with counts, the owner's lists with colours, quick add (title + optional date/time), tick off (stays visible ~1 s), delete, "Show completed". Completed history is only fetched when shown. Timed reminders get an EventKit alarm so they also alert on the iPhone.
 - **Voice Memos:** search, play, seek, save; the player card's primary is play/pause.
-- **Find My:** device list (battery coloured only when low, beacon badge), OSM map with monochrome pins, refresh every 60 s.
-- **Settings:** sections for Connection/pairing, Sending address help, Notifications (all categories, quiet hours, mute list), Autofill (sources, silent mode, Shortcut token, Gmail), Find My for this PC (Linux), About.
+- **Find My:** full-bleed MapLibre vector map with OpenFreeMap's `dark` style (no API key; all requests go through the `bb://map/` cache proxy). The device list floats over the map as a translucent panel (hideable). Markers are round device-icon badges; the selected one is inverted with its name and an accuracy ring. A detail card shows last seen, accuracy, battery (coloured only when low), coordinates and "Open in OpenStreetMap". Refreshes every 60 s. CARTO's basemaps were tried and now need an API key; don't go back to inverting light OSM tiles (the owner found it forced).
+- **Settings:** sections for Connection/pairing, Sending address help, Services (which Apple services show; all on by default; a hidden service loses its tab and notifications), Notifications (all categories incl. Reminders due, quiet hours, mute list; groups dim when their service is hidden), Autofill (sources, silent mode, Shortcut token, Gmail), Find My for this PC (Linux), About.
 
 Behaviour:
 - **Toasts:** bottom-right cards.

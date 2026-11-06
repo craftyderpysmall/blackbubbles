@@ -28,7 +28,7 @@ fn millis(date: &NSDate) -> Timestamp {
 }
 
 /// A stable pleasant color per calendar (EventKit's color needs AppKit color spaces).
-fn color_for(id: &str) -> u32 {
+pub(crate) fn color_for(id: &str) -> u32 {
     const PALETTE: [u32; 8] = [0xff3b30, 0xff9500, 0xffcc00, 0x34c759, 0x00c7be, 0x007aff, 0xaf52de, 0xff2d55];
     PALETTE[id.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize)) % PALETTE.len()]
 }

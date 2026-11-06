@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowLeft, Check, NotebookPen, Plus } from "lucide-react";
+import { ArrowLeft, Check, Lock, NotebookPen, Plus } from "lucide-react";
 import { api, errorText, type NoteSummary } from "@/lib/bb";
 import { keys } from "@/lib/events";
 import { NARROW_BELOW, useApp, useWidth } from "@/lib/app";
@@ -25,7 +25,8 @@ export default function NotesPage() {
   const notes = useQuery({ queryKey: [...keys.notes, folder], queryFn: () => api.notes(folder), enabled: connected });
   const note = useQuery({ queryKey: keys.note(open ?? ""), queryFn: () => api.note(open!), enabled: connected && !!open });
 
-  const dirty = open !== null && note.data !== undefined && body !== saved;
+  const locked = note.data?.summary.locked ?? false;
+  const dirty = open !== null && note.data !== undefined && !locked && body !== saved;
   // Load the note, and reload it after a change on the Mac unless it has unsaved edits.
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
@@ -133,6 +134,15 @@ export default function NotesPage() {
             <Center><Spinner /></Center>
           ) : note.error ? (
             <EmptyState icon={NotebookPen} title="Couldn't open this note" hint={errorText(note.error)} />
+          ) : locked ? (
+            <>
+              <div className="flex min-h-14 items-center gap-2 border-b border-border px-3 py-2">
+                {narrow && <IconButton icon={ArrowLeft} label="Back" onClick={() => select(null)} />}
+                <div className="min-w-0 flex-1 truncate pl-1 text-[14px] font-semibold text-fg">{note.data?.summary.title}</div>
+                <Badge icon={Lock}>Locked</Badge>
+              </div>
+              <EmptyState icon={Lock} title="This note is locked" hint="It's encrypted with your Notes password, so BlackBubbles can't read or change it. Open it in Notes on your Mac or iPhone." />
+            </>
           ) : (
             <>
               <div className="flex min-h-14 items-center gap-2 border-b border-border px-3 py-2">
@@ -176,9 +186,10 @@ function NoteList({ notes, open, onOpen }: { notes: NoteSummary[]; open: string 
               >
                 <span className="flex items-baseline gap-2">
                   <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-fg">{n.title || "New Note"}</span>
+                  {n.locked && <Lock className="size-3 shrink-0 self-center text-subtle" aria-label="Locked" />}
                   <span className="shrink-0 text-[11px] text-subtle">{shortTime(n.modified)}</span>
                 </span>
-                <span className="truncate text-xs text-muted">{n.snippet || "No additional text"}</span>
+                <span className="truncate text-xs text-muted">{n.locked ? "Locked" : n.snippet || "No additional text"}</span>
               </button>
             </div>
           );

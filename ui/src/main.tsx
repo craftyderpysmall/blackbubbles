@@ -6,7 +6,7 @@ import "@fontsource/jetbrains-mono/400.css";
 // Colour emoji everywhere, bundled and split by unicode-range so only used glyphs load.
 // macOS prefers Apple Color Emoji (earlier in the font stack).
 import "@fontsource/noto-color-emoji";
-import "leaflet/dist/leaflet.css";
+import "maplibre-gl/dist/maplibre-gl.css";
 import "./index.css";
 import { native, errorText } from "./lib/bb";
 import { AppProvider } from "./lib/app";

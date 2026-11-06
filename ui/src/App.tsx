@@ -1,9 +1,9 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { AudioLines, Calendar, Image, MapPin, MessageCircle, NotebookPen, Settings, type LucideIcon } from "lucide-react";
+import { AudioLines, Calendar, Image, ListChecks, MapPin, MessageCircle, NotebookPen, Settings, type LucideIcon } from "lucide-react";
 import { onServerEvent, type Status } from "./lib/bb";
 import { applyServerEvent } from "./lib/events";
-import { RAIL_COMPACT_BELOW, useApp, useWidth, type Tab } from "./lib/app";
+import { RAIL_COMPACT_BELOW, tabShown, useApp, useWidth, type Tab } from "./lib/app";
 import { cn } from "./lib/utils";
 import { Center, Spinner } from "./components/ui";
 import { MessagesPage } from "./pages/Messages";
@@ -12,6 +12,7 @@ import { MessagesPage } from "./pages/Messages";
 const PhotosPage = lazy(() => import("./pages/Photos"));
 const NotesPage = lazy(() => import("./pages/Notes"));
 const CalendarPage = lazy(() => import("./pages/Calendar"));
+const RemindersPage = lazy(() => import("./pages/Reminders"));
 const VoicePage = lazy(() => import("./pages/Voice"));
 const FindMyPage = lazy(() => import("./pages/FindMy"));
 const SettingsPage = lazy(() => import("./pages/Settings"));
@@ -21,6 +22,7 @@ const NAV: [Tab, LucideIcon, string][] = [
   ["photos", Image, "Photos"],
   ["notes", NotebookPen, "Notes"],
   ["calendar", Calendar, "Calendar"],
+  ["reminders", ListChecks, "Reminders"],
   ["voice", AudioLines, "Voice Memos"],
   ["findmy", MapPin, "Find My"],
   ["settings", Settings, "Settings"],
@@ -31,6 +33,7 @@ const PAGES: Record<Tab, React.ComponentType> = {
   photos: PhotosPage,
   notes: NotesPage,
   calendar: CalendarPage,
+  reminders: RemindersPage,
   voice: VoicePage,
   findmy: FindMyPage,
   settings: SettingsPage,
@@ -50,7 +53,7 @@ function statusLine(status: Status): [string, string] {
 }
 
 function Rail({ compact }: { compact: boolean }) {
-  const { tab, setTab, status } = useApp();
+  const { tab, setTab, status, config } = useApp();
   const [label, dot] = statusLine(status);
   return (
     <nav className={cn("flex shrink-0 flex-col gap-1 py-1 transition-[width] duration-300 ease-decel", compact ? "w-11" : "w-48")}>
@@ -58,7 +61,7 @@ function Rail({ compact }: { compact: boolean }) {
         <Logo />
         {!compact && <span className="text-[14px] font-semibold tracking-tight text-fg">BlackBubbles</span>}
       </div>
-      {NAV.map(([id, Icon, name]) => {
+      {NAV.filter(([id]) => tabShown(id, config.services)).map(([id, Icon, name]) => {
         const active = tab === id;
         return (
           <button
@@ -119,13 +122,18 @@ function Toasts() {
 }
 
 export function App() {
-  const { tab, status } = useApp();
+  const { tab, setTab, status, config } = useApp();
   const qc = useQueryClient();
   const [rootRef, width] = useWidth<HTMLDivElement>();
   const [visited, setVisited] = useState<Set<Tab>>(() => new Set([tab]));
   const wasConnected = useRef(status.state === "Connected");
 
   useEffect(() => setVisited((v) => (v.has(tab) ? v : new Set(v).add(tab))), [tab]);
+
+  // A service switched off in Settings takes its tab with it.
+  useEffect(() => {
+    if (!tabShown(tab, config.services)) setTab(NAV.find(([id]) => tabShown(id, config.services))?.[0] ?? "settings");
+  }, [tab, config.services, setTab]);
 
   useEffect(() => {
     const off = onServerEvent((event) => applyServerEvent(qc, event));
@@ -143,7 +151,7 @@ export function App() {
     <div ref={rootRef} className="flex h-full gap-4 p-4">
       <Rail compact={width > 0 && width < RAIL_COMPACT_BELOW} />
       <main className="relative min-w-0 flex-1">
-        {[...visited].map((id) => {
+        {[...visited].filter((id) => tabShown(id, config.services)).map((id) => {
           const Page = PAGES[id];
           return (
             <div key={id} className={cn("absolute inset-0", id === tab ? "animate-enter" : "hidden")}>

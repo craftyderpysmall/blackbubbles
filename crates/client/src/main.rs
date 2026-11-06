@@ -128,7 +128,7 @@ fn main() -> Result<()> {
             if let Some(af) = autofill.as_ref().filter(|_| config.autofill.from_server) {
                 client.set_autofill(af.tx.clone());
             }
-            let shared = std::sync::Arc::new(std::sync::RwLock::new(config.notifications.clone()));
+            let shared = std::sync::Arc::new(std::sync::RwLock::new(notify::Settings::from(&config)));
             let unfocused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let _notifier = lock.is_some().then(|| {
                 let _guard = runtime.enter();
@@ -151,7 +151,7 @@ fn main() -> Result<()> {
                             if now != seen {
                                 seen = now;
                                 if let Ok(fresh) = config::Config::load() {
-                                    *shared.write().unwrap() = fresh.notifications;
+                                    *shared.write().unwrap() = notify::Settings::from(&fresh);
                                     info!("reloaded notification settings");
                                 }
                             }
@@ -220,6 +220,7 @@ fn run_gui(runtime: &tokio::runtime::Runtime, state: commands::AppState) -> Resu
             commands::pair,
             commands::beacon_setup,
             commands::save_notifications,
+            commands::save_services,
             commands::save_autofill,
             commands::autofill_http,
             commands::gmail_add,

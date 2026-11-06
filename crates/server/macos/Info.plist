@@ -12,6 +12,10 @@
     <string>BlackBubbles shows and edits your calendars on your other computers.</string>
     <key>NSCalendarsUsageDescription</key>
     <string>BlackBubbles shows and edits your calendars on your other computers.</string>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>BlackBubbles shows and edits your reminders on your other computers.</string>
+    <key>NSRemindersUsageDescription</key>
+    <string>BlackBubbles shows and edits your reminders on your other computers.</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>BlackBubbles shows your photo library on your other computers.</string>
     <key>NSAppleEventsUsageDescription</key>

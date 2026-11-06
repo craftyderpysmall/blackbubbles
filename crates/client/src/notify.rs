@@ -7,10 +7,66 @@ use std::time::{Duration, Instant};
 
 use bb_proto::{DeviceKind, Event, Message, Request, Response, Service};
 
-use crate::config::Notifications;
+use crate::config::{Notifications, Services};
 use crate::conn::{Client, Status};
 
-pub type Shared = Arc<RwLock<Notifications>>;
+/// What the notifier reads: notification choices plus which services are shown.
+#[derive(Debug, Clone, Default)]
+pub struct Settings {
+    pub notifications: Notifications,
+    pub services: Services,
+}
+
+impl From<&crate::config::Config> for Settings {
+    fn from(c: &crate::config::Config) -> Self {
+        Self { notifications: c.notifications.clone(), services: c.services }
+    }
+}
+
+pub type Shared = Arc<RwLock<Settings>>;
+
+/// When a reminder alerts: at its time, or 09:00 local on its day (as iOS does) if it has
+/// only a date. EventKit gives date-only due dates as local midnight.
+fn reminder_alert_at(r: &bb_proto::Reminder) -> Option<i64> {
+    let due = r.due?;
+    (!r.completed).then_some(if r.due_has_time { due } else { due + 9 * 3_600_000 })
+}
+
+/// Fire within five minutes after the alert time (polls are 30 s apart); never early, and
+/// never for something long past (e.g. after the PC was asleep for a day).
+fn alert_due(at: i64, now: i64) -> bool {
+    at <= now && now - at < 5 * 60_000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reminder(due: Option<i64>, has_time: bool, completed: bool) -> bb_proto::Reminder {
+        bb_proto::Reminder {
+            id: "r".into(),
+            list_id: "l".into(),
+            title: "t".into(),
+            notes: None,
+            due,
+            due_has_time: has_time,
+            completed,
+            completed_at: None,
+            priority: 0,
+        }
+    }
+
+    #[test]
+    fn reminder_alert_times() {
+        let midnight = 1_800_000_000_000;
+        assert_eq!(reminder_alert_at(&reminder(Some(midnight + 60_000), true, false)), Some(midnight + 60_000));
+        assert_eq!(reminder_alert_at(&reminder(Some(midnight), false, false)), Some(midnight + 9 * 3_600_000));
+        assert_eq!(reminder_alert_at(&reminder(None, false, false)), None);
+        assert_eq!(reminder_alert_at(&reminder(Some(midnight), true, true)), None);
+        assert!(alert_due(1000, 1000) && alert_due(1000, 1000 + 4 * 60_000));
+        assert!(!alert_due(1000, 999) && !alert_due(1000, 1000 + 6 * 60_000));
+    }
+}
 
 pub struct Notifier {
     client: Client,
@@ -49,18 +105,18 @@ impl Notifier {
     }
 
     /// Current settings if notifications may be shown right now.
-    fn active(&self) -> Option<Notifications> {
-        let settings = self.settings.read().unwrap().clone();
-        (settings.enabled && !settings.in_quiet_hours(chrono::Local::now().time())).then_some(settings)
+    fn active(&self) -> Option<(Notifications, Services)> {
+        let Settings { notifications, services } = self.settings.read().unwrap().clone();
+        (notifications.enabled && !notifications.in_quiet_hours(chrono::Local::now().time())).then_some((notifications, services))
     }
 
     fn on_event(self: &Arc<Self>, event: &Event) {
-        let Some(s) = self.active() else { return };
+        let Some((s, on)) = self.active() else { return };
         match event {
-            Event::NewMessage(message) => self.on_message(&s, message),
-            Event::PhotosChanged if s.photos => send("Photos", "New items in your library"),
-            Event::NotesChanged if s.notes => send("Notes", "A note was changed on your Mac"),
-            Event::VoiceMemosChanged if s.voice_memos => send("Voice Memos", "Your recordings changed"),
+            Event::NewMessage(message) if on.messages => self.on_message(&s, message),
+            Event::PhotosChanged if s.photos && on.photos => send("Photos", "New items in your library"),
+            Event::NotesChanged if s.notes && on.notes => send("Notes", "A note was changed on your Mac"),
+            Event::VoiceMemosChanged if s.voice_memos && on.voice_memos => send("Voice Memos", "Your recordings changed"),
             _ => {}
         }
     }
@@ -107,6 +163,7 @@ impl Notifier {
     /// Calendar reminders, Find My battery/beacon checks and connection health.
     async fn poll_loop(self: Arc<Self>) {
         let mut reminded: HashSet<(String, i64)> = HashSet::new();
+        let mut due_told: HashSet<(String, i64)> = HashSet::new();
         let mut low: HashSet<String> = HashSet::new();
         let mut beacon_seen: HashMap<String, i64> = HashMap::new();
         let mut last_find_my = Instant::now() - Duration::from_secs(3600);
@@ -122,13 +179,13 @@ impl Notifier {
             match (connected, down_since) {
                 (false, None) => down_since = Some(Instant::now()),
                 (false, Some(since)) if !told_down && since.elapsed() > Duration::from_secs(90) => {
-                    if settings.as_ref().is_some_and(|s| s.connection) && !matches!(self.client.status(), Status::NotPaired) {
+                    if settings.as_ref().is_some_and(|(s, _)| s.connection) && !matches!(self.client.status(), Status::NotPaired) {
                         send("Lost connection to your Mac", "Messages and autofill from the Mac are paused until it's back.");
                     }
                     told_down = true;
                 }
                 (true, Some(_)) => {
-                    if told_down && settings.as_ref().is_some_and(|s| s.connection) {
+                    if told_down && settings.as_ref().is_some_and(|(s, _)| s.connection) {
                         send("Reconnected to your Mac", "Everything is syncing again.");
                     }
                     down_since = None;
@@ -136,12 +193,25 @@ impl Notifier {
                 }
                 _ => {}
             }
-            let Some(s) = settings else { continue };
+            let Some((s, on)) = settings else { continue };
             if !connected {
                 continue;
             }
 
-            if s.calendar_reminders {
+            if s.reminders_due && on.reminders {
+                let now = chrono::Utc::now().timestamp_millis();
+                if let Ok(Response::Reminders(list)) = self.client.request(Request::ListReminders { list_id: None, include_completed: false }).await {
+                    for r in list {
+                        let Some(at) = reminder_alert_at(&r) else { continue };
+                        if alert_due(at, now) && due_told.insert((r.id.clone(), at)) {
+                            send(&r.title, if r.due_has_time { "Reminder" } else { "Reminder · due today" });
+                        }
+                    }
+                }
+                due_told.retain(|(_, at)| *at > now - 86_400_000);
+            }
+
+            if s.calendar_reminders && on.calendar {
                 let now = chrono::Utc::now().timestamp_millis();
                 let lead = i64::from(s.reminder_minutes) * 60_000;
                 if let Ok(Response::Events(events)) = self.client.request(Request::ListEvents { from: now, to: now + lead + 60_000 }).await {
@@ -160,7 +230,7 @@ impl Notifier {
                 reminded.retain(|(_, start)| *start > now - 86_400_000);
             }
 
-            if (s.low_battery || s.beacon_located) && last_find_my.elapsed() > Duration::from_secs(600) {
+            if on.find_my && (s.low_battery || s.beacon_located) && last_find_my.elapsed() > Duration::from_secs(600) {
                 last_find_my = Instant::now();
                 if let Ok(Response::FindMyDevices(devices)) = self.client.request(Request::ListFindMyDevices).await {
                     for device in devices {

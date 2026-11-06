@@ -33,7 +33,7 @@ This does the following:
    ```sh
    launchctl kickstart -k gui/$(id -u)/com.craftyderpysmall.bbd
    ```
-2. **Calendars and Photos.** macOS asks the first time a client opens those tabs. Click *Allow*, or allow them later under Privacy & Security.
+2. **Calendars, Reminders and Photos.** macOS asks the first time a client opens those tabs. Click *Allow*, or allow them later under Privacy & Security.
 3. **Automation.** The first time you send a message or edit a note, macOS asks whether `bbd` may control Messages or Notes. Click *Allow*.
 
 ## 4. Pair your computers

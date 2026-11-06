@@ -12,7 +12,11 @@ function woff2Only(): Plugin {
     enforce: "pre",
     transform(code, id) {
       if (!id.includes("@fontsource") || !id.endsWith(".css")) return null;
-      return code.replace(/,\s*url\([^)]*\.woff\)\s*format\(['"]woff['"]\)/g, "");
+      let css = code.replace(/,\s*url\([^)]*\.woff\)\s*format\(['"]woff['"]\)/g, "");
+      // The bundled emoji subsets can't shape emoji + U+FE0F (✈️, ❤️ drew a box), so they
+      // get their own family name and only back up a complete system emoji font.
+      if (id.includes("noto-color-emoji")) css = css.replace(/font-family: 'Noto Color Emoji'/g, "font-family: 'BlackBubbles Emoji'");
+      return css;
     },
   };
 }

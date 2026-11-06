@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, MapPin, Plus, Trash2 } from "lucide-react";
-import { api, errorText, type Calendar, type CalendarEvent } from "@/lib/bb";
+import { api, errorText, type Calendar, type CalendarEvent, type Reminder, type ReminderList } from "@/lib/bb";
+import { listColor, ReminderRow, useReminderLists, useReminders } from "@/components/Reminders";
 import { keys } from "@/lib/events";
 import { CALENDAR_STACK_BELOW, useApp, useWidth } from "@/lib/app";
 import { sameDay, time } from "@/lib/format";
@@ -24,7 +25,7 @@ function overlaps(e: CalendarEvent, day: Date) {
 }
 
 export default function CalendarPage() {
-  const { connected } = useApp();
+  const { connected, config } = useApp();
   const [ref, width] = useWidth<HTMLDivElement>();
   const today = startOfDay(new Date());
   const [month, setMonth] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
@@ -43,6 +44,13 @@ export default function CalendarPage() {
       return c ? accent(c.color) : "var(--color-muted)";
     };
   }, [calendars.data]);
+
+  // Reminders with a due date show on their day, like in the iOS Calendar.
+  const remindersOn = config.services.reminders;
+  const reminders = useReminders(false, remindersOn);
+  const lists = useReminderLists();
+  const dated = useMemo(() => (remindersOn ? (reminders.data ?? []).filter((r) => r.due !== null).sort((a, b) => a.due! - b.due!) : []), [reminders.data, remindersOn]);
+  const remindersFor = (day: Date) => dated.filter((r) => sameDay(new Date(r.due!), day));
 
   const sorted = useMemo(() => [...(events.data ?? [])].sort((a, b) => Number(b.all_day) - Number(a.all_day) || a.start - b.start), [events.data]);
   const stacked = width > 0 && width < CALENDAR_STACK_BELOW;
@@ -77,6 +85,8 @@ export default function CalendarPage() {
               today={sameDay(day, today)}
               selected={sameDay(day, selected)}
               events={sorted.filter((e) => overlaps(e, day))}
+              reminders={remindersFor(day)}
+              lists={lists.data}
               colorOf={colorOf}
               onClick={() => setSelected(day)}
             />
@@ -87,16 +97,19 @@ export default function CalendarPage() {
   );
 
   const dayEvents = sorted.filter((e) => overlaps(e, selected));
+  const dayReminders = remindersFor(selected);
   const writable = (calendars.data ?? []).filter((c) => c.writable);
+  const writableLists = remindersOn ? (lists.data ?? []).filter((l) => l.writable) : [];
+  const total = dayEvents.length + dayReminders.length;
   const agenda = (
     <Card className={cn("flex min-h-0 flex-col overflow-hidden", stacked ? "flex-1" : "w-[320px] shrink-0")}>
       <div className="flex items-center gap-2 px-4 pt-3 pb-2">
         <div className="min-w-0 flex-1">
           <div className="truncate text-[14px] font-semibold text-fg">{agendaTitle.format(selected)}</div>
-          <div className="text-xs text-subtle">{dayEvents.length ? `${dayEvents.length} event${dayEvents.length > 1 ? "s" : ""}` : "Nothing scheduled"}</div>
+          <div className="text-xs text-subtle">{summary(dayEvents.length, dayReminders.length)}</div>
         </div>
-        <Button variant="primary" size="sm" icon={Plus} disabled={!connected || !writable.length} onClick={() => setCreating(true)}>
-          New event
+        <Button variant="primary" size="sm" icon={Plus} disabled={!connected || !(writable.length || writableLists.length)} onClick={() => setCreating(true)}>
+          New
         </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
@@ -104,10 +117,18 @@ export default function CalendarPage() {
           <Center><Spinner /></Center>
         ) : events.error ? (
           <EmptyState icon={CalendarIcon} title="Couldn't load events" hint={errorText(events.error)} />
-        ) : !dayEvents.length ? (
-          <EmptyState icon={CalendarIcon} title="A free day" hint={connected ? "Add an event with New event." : "Connect to your Mac in Settings."} />
+        ) : !total ? (
+          <EmptyState icon={CalendarIcon} title="A free day" hint={connected ? "Add an event or a reminder with New." : "Connect to your Mac in Settings."} />
         ) : (
-          dayEvents.map((e) => <AgendaRow key={e.id + e.start} event={e} color={colorOf(e)} calendar={calendars.data?.find((c) => c.id === e.calendar_id)} />)
+          <>
+            {dayEvents.map((e) => <AgendaRow key={e.id + e.start} event={e} color={colorOf(e)} calendar={calendars.data?.find((c) => c.id === e.calendar_id)} />)}
+            {dayReminders.length > 0 && (
+              <>
+                <div className="px-2.5 pt-3 pb-1 text-[11px] font-medium tracking-wide text-subtle uppercase">Reminders</div>
+                {dayReminders.map((r) => <ReminderRow key={r.id} r={r} lists={lists.data} />)}
+              </>
+            )}
+          </>
         )}
       </div>
     </Card>
@@ -117,12 +138,20 @@ export default function CalendarPage() {
     <div ref={ref} className={cn("flex h-full gap-4", stacked && "flex-col")}>
       {grid}
       {agenda}
-      {creating && <NewEventDialog day={selected} calendars={writable} onClose={() => setCreating(false)} />}
+      {creating && <NewItemDialog day={selected} calendars={writable} lists={writableLists} onClose={() => setCreating(false)} />}
     </div>
   );
 }
 
-function DayCell({ day, inMonth, today, selected, events, colorOf, onClick }: { day: Date; inMonth: boolean; today: boolean; selected: boolean; events: CalendarEvent[]; colorOf: (e: CalendarEvent) => string; onClick: () => void }) {
+function summary(events: number, reminders: number) {
+  const parts = [events && `${events} event${events > 1 ? "s" : ""}`, reminders && `${reminders} reminder${reminders > 1 ? "s" : ""}`].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "Nothing scheduled";
+}
+
+/** Events are solid dots; reminders are hollow rings in their list's colour. */
+const Ring = ({ color }: { color: string }) => <span className="size-1.5 shrink-0 rounded-full border-[1.5px]" style={{ borderColor: color }} />;
+
+function DayCell({ day, inMonth, today, selected, events, reminders, lists, colorOf, onClick }: { day: Date; inMonth: boolean; today: boolean; selected: boolean; events: CalendarEvent[]; reminders: Reminder[]; lists?: ReminderList[]; colorOf: (e: CalendarEvent) => string; onClick: () => void }) {
   const [ref, w] = useWidth<HTMLButtonElement>();
   const compact = w > 0 && w < 96;
   return (
@@ -147,6 +176,9 @@ function DayCell({ day, inMonth, today, selected, events, colorOf, onClick }: { 
           {events.slice(0, 4).map((e) => (
             <span key={e.id + e.start} className="size-1.5 rounded-full" style={{ background: colorOf(e) }} />
           ))}
+          {reminders.slice(0, Math.max(0, 4 - events.length)).map((r) => (
+            <Ring key={r.id} color={listColor(lists, r.list_id)} />
+          ))}
         </span>
       ) : (
         <span className="mt-0.5 flex min-h-0 flex-1 flex-col gap-px overflow-hidden">
@@ -156,7 +188,13 @@ function DayCell({ day, inMonth, today, selected, events, colorOf, onClick }: { 
               <span className="truncate">{e.title}</span>
             </span>
           ))}
-          {events.length > 3 && <span className="pl-3 text-[10.5px] text-subtle">+{events.length - 3} more</span>}
+          {reminders.slice(0, Math.max(0, 3 - events.length)).map((r) => (
+            <span key={r.id} className={cn("flex items-center gap-1.5 truncate text-[11px]", inMonth ? "text-muted" : "text-subtle", r.completed && "line-through")}>
+              <Ring color={listColor(lists, r.list_id)} />
+              <span className="truncate">{r.title}</span>
+            </span>
+          ))}
+          {events.length + reminders.length > 3 && <span className="pl-3 text-[10.5px] text-subtle">+{events.length + reminders.length - 3} more</span>}
         </span>
       )}
     </button>
@@ -207,40 +245,61 @@ function AgendaRow({ event, color, calendar }: { event: CalendarEvent; color: st
 const pad = (n: number) => String(n).padStart(2, "0");
 const isoDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
-function NewEventDialog({ day, calendars, onClose }: { day: Date; calendars: Calendar[]; onClose: () => void }) {
+function NewItemDialog({ day, calendars, lists, onClose }: { day: Date; calendars: Calendar[]; lists: ReminderList[]; onClose: () => void }) {
   const { toast } = useApp();
   const qc = useQueryClient();
+  const [kind, setKind] = useState<"event" | "reminder">(calendars.length ? "event" : "reminder");
   const [title, setTitle] = useState("");
   const [location, setLocation] = useState("");
+  const [notes, setNotes] = useState("");
   const [date, setDate] = useState(isoDate(day));
   const [allDay, setAllDay] = useState(false);
   const [start, setStart] = useState("09:00");
   const [end, setEnd] = useState("10:00");
   const [calendar, setCalendar] = useState(calendars[0]?.id ?? "");
+  const [list, setList] = useState(lists[0]?.id ?? "");
+  const [priority, setPriority] = useState("0");
   const [busy, setBusy] = useState(false);
 
+  const [y, m, d] = date.split("-").map(Number);
+  const at = (hm: string) => {
+    const [h, min] = hm.split(":").map(Number);
+    return new Date(y, m - 1, d, h, min).getTime();
+  };
+
   const submit = async () => {
-    const [y, m, d] = date.split("-").map(Number);
-    const at = (hm: string) => {
-      const [h, min] = hm.split(":").map(Number);
-      return new Date(y, m - 1, d, h, min).getTime();
-    };
-    const range = allDay ? [new Date(y, m - 1, d).getTime(), new Date(y, m - 1, d + 1).getTime()] : [at(start), at(end)];
-    if (!allDay && !(range[1] > range[0])) return toast("The end has to be after the start");
     setBusy(true);
     try {
-      await api.createEvent({ calendar_id: calendar, title: title.trim(), location: location.trim() || null, notes: null, start: range[0], end: range[1], all_day: allDay });
-      await qc.invalidateQueries({ queryKey: keys.events });
-      toast("Event created");
+      if (kind === "event") {
+        const range = allDay ? [new Date(y, m - 1, d).getTime(), new Date(y, m - 1, d + 1).getTime()] : [at(start), at(end)];
+        if (!allDay && !(range[1] > range[0])) {
+          setBusy(false);
+          return toast("The end has to be after the start");
+        }
+        await api.createEvent({ calendar_id: calendar, title: title.trim(), location: location.trim() || null, notes: notes.trim() || null, start: range[0], end: range[1], all_day: allDay });
+        await qc.invalidateQueries({ queryKey: keys.events });
+        toast("Event created");
+      } else {
+        await api.createReminder({
+          list_id: list || null,
+          title: title.trim(),
+          notes: notes.trim() || null,
+          due: allDay ? new Date(y, m - 1, d).getTime() : at(start),
+          due_has_time: !allDay,
+          priority: Number(priority),
+        });
+        await qc.invalidateQueries({ queryKey: keys.reminders });
+        toast("Reminder created");
+      }
       onClose();
     } catch (err) {
-      toast(`Couldn't create the event: ${errorText(err)}`);
+      toast(`Couldn't create it: ${errorText(err)}`);
       setBusy(false);
     }
   };
 
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()} title="New event">
+    <Dialog open onOpenChange={(o) => !o && onClose()} title={kind === "event" ? "New event" : "New reminder"}>
       <form
         className="flex flex-col gap-3"
         onSubmit={(e) => {
@@ -248,26 +307,57 @@ function NewEventDialog({ day, calendars, onClose }: { day: Date; calendars: Cal
           void submit();
         }}
       >
+        {calendars.length > 0 && lists.length > 0 && (
+          <div className="grid grid-cols-2 gap-1 rounded-full border border-border bg-bg p-1">
+            {(["event", "reminder"] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setKind(k)}
+                className={cn("h-7 rounded-full text-xs font-medium transition-colors duration-200", kind === k ? "bg-raised text-fg" : "text-muted hover:text-fg")}
+              >
+                {k === "event" ? "Event" : "Reminder"}
+              </button>
+            ))}
+          </div>
+        )}
         <Input autoFocus placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} />
-        <Input placeholder="Location" value={location} onChange={(e) => setLocation(e.target.value)} />
+        {kind === "event" && <Input placeholder="Location" value={location} onChange={(e) => setLocation(e.target.value)} />}
+        <Input placeholder="Notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
         <div className="flex gap-2">
           <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="flex-1" />
           {!allDay && (
             <>
-              <Input type="time" value={start} onChange={(e) => setStart(e.target.value)} className="w-28" />
-              <Input type="time" value={end} onChange={(e) => setEnd(e.target.value)} className="w-28" />
+              <Input type="time" value={start} onChange={(e) => setStart(e.target.value)} className="w-28" aria-label={kind === "event" ? "Starts" : "Remind me at"} />
+              {kind === "event" && <Input type="time" value={end} onChange={(e) => setEnd(e.target.value)} className="w-28" aria-label="Ends" />}
             </>
           )}
         </div>
-        <Switch checked={allDay} onChange={setAllDay} label="All day" />
-        <Select value={calendar} onChange={setCalendar}>
-          {calendars.map((c) => (
-            <option key={c.id} value={c.id}>{c.title}</option>
-          ))}
-        </Select>
+        <Switch checked={allDay} onChange={setAllDay} label={kind === "event" ? "All day" : "Date only"} description={kind === "reminder" ? "Off: alerts at the time, on your iPhone too" : undefined} />
+        {kind === "event" ? (
+          <Select value={calendar} onChange={setCalendar}>
+            {calendars.map((c) => (
+              <option key={c.id} value={c.id}>{c.title}</option>
+            ))}
+          </Select>
+        ) : (
+          <div className="flex gap-2">
+            <Select value={list} onChange={setList} className="flex-1">
+              {lists.map((l) => (
+                <option key={l.id} value={l.id}>{l.title}</option>
+              ))}
+            </Select>
+            <Select value={priority} onChange={setPriority} className="w-36">
+              <option value="0">No priority</option>
+              <option value="9">Low</option>
+              <option value="5">Medium</option>
+              <option value="1">High</option>
+            </Select>
+          </div>
+        )}
         <div className="mt-1 flex justify-end gap-2">
           <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="primary" busy={busy} disabled={!title.trim() || !calendar}>Create</Button>
+          <Button type="submit" variant="primary" busy={busy} disabled={!title.trim() || (kind === "event" ? !calendar : !list)}>Create</Button>
         </div>
       </form>
     </Dialog>

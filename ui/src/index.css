@@ -1,5 +1,5 @@
 @import "tailwindcss";
-/* Fonts (Inter, JetBrains Mono, bundled colour emoji) and Leaflet's CSS are imported
+/* Fonts (Inter, JetBrains Mono, bundled colour emoji) and MapLibre's CSS are imported
    from main.tsx so Vite can drop the unused .woff fallbacks. */
 
 /* The "Neutral" theme: ~/.config/hypr/hyprland.lua is the source of truth. */
@@ -21,8 +21,10 @@
   --color-magenta: #b49ae6;
   --color-cyan: #7cc6cf;
 
-  --font-sans: "Inter Variable", "Inter", "Apple Color Emoji", "Noto Color Emoji", system-ui, sans-serif;
-  --font-mono: "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, "Apple Color Emoji", "Noto Color Emoji", monospace;
+  /* Emoji: a complete system colour font first (it shapes ✈️ ❤️ and every sequence),
+     then the bundled subsets for systems without one. */
+  --font-sans: "Inter Variable", "Inter", "Apple Color Emoji", "Noto Color Emoji", "BlackBubbles Emoji", system-ui, sans-serif;
+  --font-mono: "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, "Apple Color Emoji", "Noto Color Emoji", "BlackBubbles Emoji", monospace;
 
   --radius-card: 16px;
   --radius-control: 10px;
@@ -116,24 +118,25 @@
   }
 }
 
-/* Leaflet on the Neutral palette: monochrome tiles, our own controls. */
-.leaflet-container {
-  background: var(--color-bg);
+/* MapLibre: OpenFreeMap's dark style, our own controls and markers. */
+.maplibregl-map {
+  background: #0e0e0e;
   font-family: var(--font-sans);
 }
-.bb-map .leaflet-tile-pane {
-  filter: grayscale(1) invert(1) brightness(0.78) contrast(0.92);
+.bb-marker > div:first-child {
+  transition: transform 300ms var(--ease-decel);
 }
-.leaflet-control-attribution {
-  background: rgb(10 10 10 / 0.7) !important;
+.bb-marker:hover > div:first-child {
+  transform: scale(1.06);
+}
+.maplibregl-ctrl-attrib {
+  background: rgb(23 23 23 / 0.85) !important;
   color: var(--color-subtle) !important;
   font-size: 10px;
-  border-top-left-radius: 8px;
 }
-.leaflet-control-attribution a {
+.maplibregl-ctrl-attrib a {
   color: var(--color-muted) !important;
 }
-.leaflet-div-icon.bb-pin {
-  background: none;
-  border: none;
+.maplibregl-ctrl-attrib-button {
+  filter: invert(1);
 }

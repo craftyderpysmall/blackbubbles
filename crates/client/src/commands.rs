@@ -15,7 +15,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::audio::{Audio, Snapshot};
 use crate::blob::{self, Blobs};
-use crate::config::{self, Config, Notifications};
+use crate::config::{self, Config, Notifications, Services};
 use crate::conn::{self, Client, Status};
 use crate::notify::{self, Notifier};
 
@@ -45,7 +45,7 @@ impl AppState {
     ) -> Self {
         Self {
             client: RwLock::new(Client::new(rt.clone(), None)),
-            notifications: Arc::new(RwLock::new(config.notifications.clone())),
+            notifications: Arc::new(RwLock::new(notify::Settings::from(&config))),
             config: Mutex::new(config),
             focused: Arc::new(AtomicBool::new(true)),
             autofill_running: autofill.is_some(),
@@ -98,7 +98,7 @@ impl AppState {
     fn update(&self, f: impl FnOnce(&mut Config)) -> Result<ConfigView, String> {
         let mut config = self.config.lock().unwrap();
         f(&mut config);
-        *self.notifications.write().unwrap() = config.notifications.clone();
+        *self.notifications.write().unwrap() = notify::Settings::from(&*config);
         config.save().map_err(|e| format!("{e:#}"))?;
         Ok(ConfigView::from(&*config))
     }
@@ -111,6 +111,7 @@ pub struct ConfigView {
     server: Option<ServerView>,
     autofill: AutofillView,
     notifications: Notifications,
+    services: Services,
     beacon: Option<BeaconView>,
 }
 
@@ -156,6 +157,7 @@ impl From<&Config> for ConfigView {
                 gmail: c.autofill.gmail.iter().map(|g| g.address.clone()).collect(),
             },
             notifications: c.notifications.clone(),
+            services: c.services,
             beacon: c.beacon.as_ref().map(|b| BeaconView { name: b.name.clone(), keys: b.private_keys.len() }),
         }
     }
@@ -253,6 +255,11 @@ pub async fn beacon_setup(state: State<'_, AppState>, name: String) -> Result<Co
 #[tauri::command]
 pub fn save_notifications(state: State<'_, AppState>, notifications: Notifications) -> Result<ConfigView, String> {
     state.update(|c| c.notifications = notifications)
+}
+
+#[tauri::command]
+pub fn save_services(state: State<'_, AppState>, services: Services) -> Result<ConfigView, String> {
+    state.update(|c| c.services = services)
 }
 
 #[derive(Deserialize)]

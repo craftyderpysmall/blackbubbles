@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Milliseconds since the Unix epoch.
 pub type Timestamp = i64;
@@ -52,6 +52,12 @@ pub enum Request {
     RegisterBeacon { id: String, name: String, private_keys: Vec<Vec<u8>> },
     /// Read part of a binary object (attachment, photo, recording).
     GetBlob { kind: BlobKind, id: String, offset: u64, len: u32 },
+    ListReminderLists,
+    /// `list_id: None` = every list.
+    ListReminders { list_id: Option<String>, include_completed: bool },
+    CreateReminder(NewReminder),
+    SetReminderCompleted { id: String, completed: bool },
+    DeleteReminder { id: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -72,6 +78,19 @@ pub struct NewEvent {
     pub start: Timestamp,
     pub end: Timestamp,
     pub all_day: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NewReminder {
+    /// `None` = the default list for new reminders.
+    pub list_id: Option<String>,
+    pub title: String,
+    pub notes: Option<String>,
+    pub due: Option<Timestamp>,
+    /// `false` = the due date is a whole day (like an all-day event).
+    pub due_has_time: bool,
+    /// 0 none, 1 high, 5 medium, 9 low (EventKit's scale).
+    pub priority: u8,
 }
 
 /// Largest blob chunk a client should ask for.
@@ -105,6 +124,9 @@ pub enum Response {
     Event(CalendarEvent),
     Created { id: String },
     Blob { data: Vec<u8>, total: u64, mime_type: Option<String> },
+    ReminderLists(Vec<ReminderList>),
+    Reminders(Vec<Reminder>),
+    Reminder(Reminder),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -156,6 +178,7 @@ pub enum Event {
     NotesChanged,
     VoiceMemosChanged,
     PhotosChanged,
+    RemindersChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,12 +255,37 @@ pub struct NoteSummary {
     pub title: String,
     pub snippet: String,
     pub modified: Timestamp,
+    /// Password-protected in Notes: the body isn't readable or editable here.
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Note {
     pub summary: NoteSummary,
     pub body: String,
+}
+
+/// A Reminders list (an EventKit reminder calendar).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReminderList {
+    pub id: String,
+    pub title: String,
+    /// 0xRRGGBB
+    pub color: u32,
+    pub writable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Reminder {
+    pub id: String,
+    pub list_id: String,
+    pub title: String,
+    pub notes: Option<String>,
+    pub due: Option<Timestamp>,
+    pub due_has_time: bool,
+    pub completed: bool,
+    pub completed_at: Option<Timestamp>,
+    pub priority: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -17,6 +17,8 @@ export const keys = {
   albums: ["albums"] as const,
   assets: ["assets"] as const,
   findMy: ["findMy"] as const,
+  reminderLists: ["reminderLists"] as const,
+  reminders: ["reminders"] as const,
 };
 
 /** Add a message to its thread (newest page is `pages[0]`, each page oldest→newest),
@@ -42,6 +44,7 @@ export function applyServerEvent(qc: QueryClient, event: ServerEvent) {
       NotesChanged: [keys.notes, keys.noteFolders, ["note"]],
       VoiceMemosChanged: [keys.memos],
       PhotosChanged: [keys.albums, keys.assets],
+      RemindersChanged: [keys.reminders, keys.reminderLists],
     } as const;
     for (const key of map[event] ?? []) void qc.invalidateQueries({ queryKey: key });
     return;

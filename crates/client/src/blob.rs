@@ -2,8 +2,9 @@
 //!
 //! - `blob/<Kind>/<id>`: a server blob (photo, thumbnail, attachment, recording), fetched
 //!   in chunks with `GetBlob` and kept in a byte-bounded LRU so scrolling back is instant.
-//! - `tile/<z>/<x>/<y>`: an OpenStreetMap tile, fetched with a proper User-Agent (as the
-//!   OSM tile policy asks) and cached on disk for a week.
+//! - `map/<path>`: a file from OpenFreeMap (`tiles.openfreemap.org`: open vector tiles,
+//!   styles, fonts and sprites, no API key). MapLibre's requests are rewritten to this
+//!   route so the map works offline from a disk cache and sends a proper User-Agent.
 //!
 //! The frontend builds URLs with `convertFileSrc(path, "bb")`, which percent-encodes the
 //! whole path, so it is decoded here before splitting.
@@ -22,7 +23,11 @@ use crate::conn::Client;
 const CACHE_BYTES: usize = 160 * 1024 * 1024;
 /// Thumbnails for a whole screen load in parallel, without flooding the connection.
 const MAX_IN_FLIGHT: usize = 24;
-const TILE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
+/// Tile sets are versioned by date in their URLs, so tiles/fonts/sprites keep a week;
+/// style and TileJSON documents (which point at the current version) keep a day.
+const MAP_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
+const MAP_DOC_MAX_AGE: Duration = Duration::from_secs(24 * 3600);
+const MAP_HOST: &str = "https://tiles.openfreemap.org/";
 
 pub type Blob = Arc<(Vec<u8>, String)>;
 
@@ -120,44 +125,56 @@ impl Blobs {
         Ok(blob)
     }
 
-    async fn tile(&self, z: u32, x: u32, y: u32) -> Result<Vec<u8>, String> {
-        if z > 19 || x >= 1 << z || y >= 1 << z {
-            return Err("tile out of range".into());
+    /// A file from OpenFreeMap, from the disk cache when fresh enough.
+    async fn map_file(&self, path: &str) -> Result<Vec<u8>, String> {
+        let safe = !path.is_empty()
+            && !path.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..")
+            && path.chars().all(|c| c.is_ascii_alphanumeric() || " _.,-/".contains(c));
+        if !safe {
+            return Err("bad map path".into());
         }
-        let path = tile_dir().map(|d| d.join(format!("{z}/{x}/{y}.png")));
-        if let Some(path) = &path
-            && let Ok(meta) = std::fs::metadata(path)
-            && meta.modified().ok().and_then(|m| SystemTime::now().duration_since(m).ok()).is_some_and(|age| age < TILE_MAX_AGE)
-            && let Ok(bytes) = tokio::fs::read(path).await
+        let max_age = if path.ends_with(".json") || !path.contains('.') { MAP_DOC_MAX_AGE } else { MAP_MAX_AGE };
+        let cached = map_dir().map(|d| d.join(path.replace(' ', "_")));
+        if let Some(file) = &cached
+            && let Ok(meta) = std::fs::metadata(file)
+            && meta.modified().ok().and_then(|m| SystemTime::now().duration_since(m).ok()).is_some_and(|age| age < max_age)
+            && let Ok(bytes) = tokio::fs::read(file).await
         {
             return Ok(bytes);
         }
         let _permit = self.tiles.acquire().await.map_err(|e| e.to_string())?;
-        let url = format!("https://tile.openstreetmap.org/{z}/{x}/{y}.png");
-        let fetched = async {
-            let res = self.http.get(&url).send().await?.error_for_status()?;
-            res.bytes().await
-        }
-        .await;
+        let encoded: Vec<String> = path.split('/').map(|seg| percent_encoding::utf8_percent_encode(seg, percent_encoding::NON_ALPHANUMERIC).to_string()).collect();
+        let url = format!("{MAP_HOST}{}", encoded.join("/").replace("%2E", ".").replace("%2D", "-").replace("%5F", "_"));
+        let fetched = async { self.http.get(&url).send().await?.error_for_status()?.bytes().await }.await;
         match fetched {
             Ok(bytes) => {
-                if let Some(path) = &path {
-                    let _ = std::fs::create_dir_all(path.parent().unwrap());
-                    let _ = std::fs::write(path, &bytes);
+                if let Some(file) = &cached {
+                    let _ = std::fs::create_dir_all(file.parent().unwrap());
+                    let _ = std::fs::write(file, &bytes);
                 }
                 Ok(bytes.to_vec())
             }
-            // Offline: an old tile beats a blank map.
-            Err(err) => match &path {
-                Some(path) if path.exists() => tokio::fs::read(path).await.map_err(|e| e.to_string()),
+            // Offline: a stale copy beats a blank map.
+            Err(err) => match &cached {
+                Some(file) if file.exists() => tokio::fs::read(file).await.map_err(|e| e.to_string()),
                 _ => Err(err.to_string()),
             },
         }
     }
 }
 
-fn tile_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "BlackBubbles").map(|d| d.cache_dir().join("tiles"))
+fn map_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "BlackBubbles").map(|d| d.cache_dir().join("map"))
+}
+
+fn map_mime(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some("pbf" | "mvt") => "application/x-protobuf",
+        Some("png") => "image/png",
+        Some("json") => "application/json",
+        _ if !path.contains('.') => "application/json",
+        _ => "application/octet-stream",
+    }
 }
 
 fn respond(status: StatusCode, mime: &str, body: Vec<u8>, cache: bool) -> Response<Vec<u8>> {
@@ -188,12 +205,20 @@ pub async fn handle(blobs: &Blobs, client: Client, request: Request<Vec<u8>>) ->
                 Err(err) => error(StatusCode::BAD_GATEWAY, err),
             }
         }
-        (Some("tile"), Some(z), Some(rest)) => {
-            let mut xy = rest.split('/');
-            let parsed = (z.parse(), xy.next().map(str::parse), xy.next().map(|y| y.trim_end_matches(".png").parse()));
-            let (Ok(z), Some(Ok(x)), Some(Ok(y))) = parsed else { return error(StatusCode::BAD_REQUEST, "bad tile") };
-            match blobs.tile(z, x, y).await {
-                Ok(bytes) => respond(StatusCode::OK, "image/png", bytes, true),
+        (Some("map"), Some(first), rest) => {
+            let file = match rest {
+                Some(rest) => format!("{first}/{rest}"),
+                None => first.to_string(),
+            };
+            match blobs.map_file(&file).await {
+                Ok(bytes) => {
+                    let gzipped = bytes.starts_with(&[0x1f, 0x8b]);
+                    let mut res = respond(StatusCode::OK, map_mime(&file), bytes, false);
+                    if gzipped {
+                        res.headers_mut().insert(header::CONTENT_ENCODING, header::HeaderValue::from_static("gzip"));
+                    }
+                    res
+                }
                 Err(err) => error(StatusCode::BAD_GATEWAY, err),
             }
         }

@@ -13,7 +13,28 @@ pub struct Config {
     pub server: Option<ServerConfig>,
     pub autofill: bb_autofill::Config,
     pub notifications: Notifications,
+    pub services: Services,
     pub beacon: Option<BeaconConfig>,
+}
+
+/// Which Apple services BlackBubbles shows. A hidden service gets no tab and no
+/// notifications. Everything is on by default.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Services {
+    pub messages: bool,
+    pub photos: bool,
+    pub notes: bool,
+    pub calendar: bool,
+    pub reminders: bool,
+    pub voice_memos: bool,
+    pub find_my: bool,
+}
+
+impl Default for Services {
+    fn default() -> Self {
+        Self { messages: true, photos: true, notes: true, calendar: true, reminders: true, voice_memos: true, find_my: true }
+    }
 }
 
 /// What gets a desktop notification. Shown in the process that owns autofill (the
@@ -36,6 +57,8 @@ pub struct Notifications {
     // Calendar
     pub calendar_reminders: bool,
     pub reminder_minutes: u32,
+    /// Reminders (the app) at their due time; date-only ones at 09:00.
+    pub reminders_due: bool,
     // Library changes
     pub photos: bool,
     pub notes: bool,
@@ -66,6 +89,7 @@ impl Default for Notifications {
             muted_chats: vec![],
             calendar_reminders: true,
             reminder_minutes: 10,
+            reminders_due: true,
             photos: false,
             notes: false,
             voice_memos: false,
@@ -98,6 +122,15 @@ impl Notifications {
 mod tests {
     use super::*;
     use chrono::NaiveTime;
+
+    #[test]
+    fn services_default_on_and_old_configs_load() {
+        let old: Config = toml::from_str("[notifications]\nenabled = false\n").unwrap();
+        assert_eq!(old.services, Services::default());
+        assert!(old.services.reminders && old.notifications.reminders_due);
+        let partial: Config = toml::from_str("[services]\nphotos = false\n").unwrap();
+        assert!(!partial.services.photos && partial.services.messages);
+    }
 
     #[test]
     fn quiet_hours_wrap_midnight() {
