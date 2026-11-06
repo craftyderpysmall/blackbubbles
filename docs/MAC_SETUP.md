@@ -5,6 +5,7 @@
 ## 1. Prepare macOS
 
 - **Messages:** sign in with your Apple ID. On your iPhone, go to Settings → Messages → **Text Message Forwarding** and enable this Mac, so SMS reach it too.
+- **Send from your phone number, not your email:** on the iPhone, go to Settings → Messages → Send & Receive and set *Start New Conversations From* to your number. On the Mac, go to Messages → Settings → iMessage, tick your number and set the same option. BlackBubbles always replies from the address a conversation already uses, and each chat header shows it (email is flagged in yellow). Start a new conversation to move a chat from email to your number.
 - **Photos:** enable iCloud Photos, or keep a local library.
 - **Find My:** turn it on for the Mac. This is needed for the beacon lookups.
 - **Sleep:** stop the Mac sleeping (System Settings → Energy → *Prevent automatic sleeping when the display is off*).

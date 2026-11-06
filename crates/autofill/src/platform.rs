@@ -275,3 +275,16 @@ impl Platform for MacOs {
         enigo_type(text)
     }
 }
+
+/// A plain informational notification (no actions, returns immediately).
+pub fn simple_notify(summary: &str, body: &str) {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let escape = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        let _ = notify_rust::Notification::new().appname("BlackBubbles").summary(&escape(summary)).body(&escape(body)).show();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = mac_notification_sys::send_notification(summary, None, body, None);
+    }
+}

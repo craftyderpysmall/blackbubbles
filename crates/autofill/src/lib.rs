@@ -56,7 +56,8 @@ impl Autofill {
 pub fn start(config: &Config) -> anyhow::Result<Autofill> {
     let (tx, rx) = channel::<Incoming>();
     let keywords = detect::keyword_regex(&config.keywords());
-    let deliverer = deliver::Deliverer::new(Arc::from(platform::detect()), Duration::from_secs(config.clear_after.max(5)));
+    let deliverer = deliver::Deliverer::new(Arc::from(platform::detect()), Duration::from_secs(config.clear_after.max(5)))
+        .with_notifications(config.notify);
 
     if let Some(http) = config.http.clone() {
         let tx = tx.clone();

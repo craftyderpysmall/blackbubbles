@@ -30,6 +30,7 @@ pub struct Deliverer {
     platform: Arc<dyn Platform>,
     clear_after: Duration,
     state: Arc<Mutex<State>>,
+    notify: bool,
 }
 
 fn host_of(url: &str) -> String {
@@ -38,7 +39,13 @@ fn host_of(url: &str) -> String {
 
 impl Deliverer {
     pub fn new(platform: Arc<dyn Platform>, clear_after: Duration) -> Self {
-        Self { platform, clear_after, state: Arc::default() }
+        Self { platform, clear_after, state: Arc::default(), notify: true }
+    }
+
+    /// Without notifications codes are only copied (links can't be offered at all).
+    pub fn with_notifications(mut self, notify: bool) -> Self {
+        self.notify = notify;
+        self
     }
 
     fn is_duplicate(&self, value: &str) -> bool {
@@ -97,6 +104,10 @@ impl Deliverer {
             return;
         }
         self.copy_with_restore(code);
+        if !self.notify {
+            info!("autofill: copied a code");
+            return;
+        }
         let can_type = self.platform.can_type();
         let body = if can_type { format!("From {sender}. Click to paste.") } else { format!("From {sender}. Copied to the clipboard.") };
         let (platform, code, secs) = (self.platform.clone(), code.to_string(), self.clear_after.as_secs());
@@ -110,7 +121,7 @@ impl Deliverer {
     }
 
     pub fn deliver_link(&self, url: &str, _sender: &str) {
-        if self.is_duplicate(url) {
+        if !self.notify || self.is_duplicate(url) {
             return;
         }
         // Show the host so lookalike domains stand out.

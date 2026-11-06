@@ -69,6 +69,7 @@ impl MockBackend {
                 participants: vec![name.to_string()],
                 service: *service,
                 last_message: None,
+                my_address: Some(if i == 1 { "me@icloud.com".into() } else { "+15550000000".into() }),
             });
         }
         let today = now - now.rem_euclid(DAY);

@@ -45,10 +45,6 @@ pub fn bytes(n: u64) -> String {
     }
 }
 
-pub fn color(rgb: u32) -> eframe::egui::Color32 {
-    eframe::egui::Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
-}
-
 /// Save downloaded bytes into the user's Downloads folder without overwriting.
 pub fn save_download(name: &str, data: &[u8]) -> std::io::Result<std::path::PathBuf> {
     let dir = directories::UserDirs::new()

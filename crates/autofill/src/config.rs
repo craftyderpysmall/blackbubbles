@@ -15,6 +15,8 @@ pub struct Config {
     pub extra_keywords: Vec<String>,
     /// Take codes from iMessage/SMS seen by the Mac server.
     pub from_server: bool,
+    /// Show a click-to-paste notification. Off: codes are copied silently.
+    pub notify: bool,
     /// iPhone Shortcut endpoint (works even when the Mac is offline).
     pub http: Option<HttpConfig>,
     #[serde(deserialize_with = "one_or_many")]
@@ -23,7 +25,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { enabled: true, clear_after: 60, extra_keywords: vec![], from_server: true, http: None, gmail: vec![] }
+        Self { enabled: true, clear_after: 60, extra_keywords: vec![], from_server: true, notify: true, http: None, gmail: vec![] }
     }
 }
 

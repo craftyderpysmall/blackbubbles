@@ -28,7 +28,10 @@ struct Inner {
     events: Mutex<Vec<Event>>,
     repaint: Mutex<Option<eframe::egui::Context>>,
     autofill: Mutex<Option<std_mpsc::Sender<bb_autofill::Incoming>>>,
+    hook: Mutex<Option<EventHook>>,
 }
+
+pub type EventHook = Arc<dyn Fn(&Event) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct Client {
@@ -70,6 +73,7 @@ impl Client {
             events: Mutex::default(),
             repaint: Mutex::default(),
             autofill: Mutex::default(),
+            hook: Mutex::default(),
         });
         let tx = server.map(|server| {
             let (tx, rx) = mpsc::unbounded_channel();
@@ -85,6 +89,11 @@ impl Client {
 
     pub fn set_autofill(&self, tx: std_mpsc::Sender<bb_autofill::Incoming>) {
         *self.inner.autofill.lock().unwrap() = Some(tx);
+    }
+
+    /// Called for every server event (used by the notifier).
+    pub fn set_event_hook(&self, hook: EventHook) {
+        *self.inner.hook.lock().unwrap() = Some(hook);
     }
 
     pub fn status(&self) -> Status {
@@ -177,6 +186,10 @@ impl Inner {
                 text: text.clone(),
                 links: vec![],
             });
+        }
+        let hook = self.hook.lock().unwrap().clone();
+        if let Some(hook) = hook {
+            hook(&event);
         }
         self.events.lock().unwrap().push(event);
         self.repaint();

@@ -1,12 +1,15 @@
 use bb_proto::{Album, ApiError, Asset, BlobKind, Event, Request, Response};
-use eframe::egui::{self, RichText, Vec2};
+use eframe::egui::{self, Align, Align2, Color32, Layout, Vec2};
 
 use crate::conn::Pending;
+use crate::kit::{self, icon};
 use crate::media;
 use crate::pages::Cx;
+use crate::theme::{self, FG, FG_SUBTLE};
 use crate::util;
 
-const TILE: f32 = 150.0;
+/// Tiles stretch between these sizes so the grid always fills the width exactly.
+const MIN_TILE: f32 = 132.0;
 const GAP: f32 = 4.0;
 const PAGE: u32 = 240;
 
@@ -25,16 +28,7 @@ pub struct PhotosPage {
 
 impl Default for PhotosPage {
     fn default() -> Self {
-        Self {
-            albums: vec![],
-            albums_req: None,
-            album: "all".into(),
-            assets: vec![],
-            assets_req: None,
-            exhausted: false,
-            viewing: None,
-            loaded: false,
-        }
+        Self { albums: vec![], albums_req: None, album: "all".into(), assets: vec![], assets_req: None, exhausted: false, viewing: None, loaded: false }
     }
 }
 
@@ -44,6 +38,7 @@ impl PhotosPage {
         self.albums_req = Some(cx.client.call(Request::ListAlbums));
         self.assets.clear();
         self.exhausted = false;
+        self.assets_req = None;
         self.load_more(cx);
     }
 
@@ -51,23 +46,17 @@ impl PhotosPage {
         if self.assets_req.is_some() || self.exhausted {
             return;
         }
-        self.assets_req = Some(cx.client.call(Request::ListAssets {
-            album_id: Some(self.album.clone()),
-            offset: self.assets.len() as u32,
-            limit: PAGE,
-        }));
+        self.assets_req = Some(cx.client.call(Request::ListAssets { album_id: Some(self.album.clone()), offset: self.assets.len() as u32, limit: PAGE }));
     }
 
-    pub fn on_event(&mut self, event: &Event, cx: &Cx) {
+    pub fn on_event(&mut self, event: &Event, cx: &mut Cx) {
         if matches!(event, Event::PhotosChanged) && self.loaded {
             self.refresh(cx);
         }
     }
 
     fn poll(&mut self, cx: &Cx) {
-        if let Some(req) = &mut self.albums_req
-            && let Some(result) = req.take()
-        {
+        if let Some(result) = self.albums_req.as_mut().and_then(Pending::take) {
             self.albums_req = None;
             match result {
                 Ok(Response::Albums(albums)) => self.albums = albums,
@@ -75,9 +64,7 @@ impl PhotosPage {
                 _ => {}
             }
         }
-        if let Some(req) = &mut self.assets_req
-            && let Some(result) = req.take()
-        {
+        if let Some(result) = self.assets_req.as_mut().and_then(Pending::take) {
             self.assets_req = None;
             match result {
                 Ok(Response::Assets(mut page)) => {
@@ -98,86 +85,102 @@ impl PhotosPage {
             self.refresh(cx);
         }
         self.poll(cx);
-
         if let Some(index) = self.viewing {
-            self.lightbox(ui, cx, index);
+            kit::card(ui, |ui| self.lightbox(ui, cx, index));
             return;
         }
+        kit::card(ui, |ui| {
+            self.toolbar(ui, cx);
+            ui.add_space(12.0);
+            self.grid(ui, cx);
+        });
+    }
 
-        egui::Panel::top("photos_bar").show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.heading("Photos");
-                let current = self.albums.iter().find(|a| a.id == self.album).map(|a| format!("{} ({})", a.title, a.count));
-                let mut chosen = None;
-                egui::ComboBox::from_id_salt("album")
-                    .selected_text(current.unwrap_or_else(|| "Library".into()))
-                    .width(240.0)
-                    .show_ui(ui, |ui| {
-                        for album in &self.albums {
-                            if ui.selectable_label(album.id == self.album, format!("{} ({})", album.title, album.count)).clicked() {
-                                chosen = Some(album.id.clone());
-                            }
+    fn toolbar(&mut self, ui: &mut egui::Ui, cx: &Cx) {
+        ui.horizontal(|ui| {
+            ui.label(kit::title("Photos"));
+            ui.add_space(4.0);
+            // Albums as pills; the selected album is the primary.
+            let mut chosen = None;
+            egui::ScrollArea::horizontal().id_salt("albums").max_width(ui.available_width() - 48.0).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    for album in &self.albums {
+                        let label = format!("{}  {}", album.title, album.count);
+                        let clicked = if album.id == self.album { kit::primary(ui, None, &label, true).clicked() } else { kit::ghost(ui, None, &label).clicked() };
+                        if clicked {
+                            chosen = Some(album.id.clone());
                         }
-                    });
-                if let Some(id) = chosen {
-                    self.album = id;
-                    self.assets.clear();
-                    self.exhausted = false;
-                    self.assets_req = None;
-                    self.load_more(cx);
-                }
-                if ui.button("Refresh").clicked() {
+                    }
+                });
+            });
+            if let Some(id) = chosen {
+                self.album = id;
+                self.assets.clear();
+                self.exhausted = false;
+                self.assets_req = None;
+                self.load_more(cx);
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if kit::icon_button(ui, icon::REFRESH, "Refresh").clicked() {
                     self.refresh(cx);
                 }
             });
-            ui.add_space(4.0);
         });
+    }
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            if self.assets.is_empty() {
-                ui.centered_and_justified(|ui| {
-                    if self.assets_req.is_some() {
-                        ui.spinner();
-                    } else {
-                        ui.label(RichText::new("No photos").weak());
+    fn grid(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
+        if self.assets.is_empty() {
+            if self.assets_req.is_some() {
+                kit::spinner_center(ui);
+            } else {
+                kit::empty_state(ui, icon::PHOTOS, "No photos", if cx.connected { "This album is empty" } else { "Connect to your Mac in Settings" });
+            }
+            return;
+        }
+        let width = ui.available_width();
+        let columns = ((width + GAP) / (MIN_TILE + GAP)).floor().max(2.0) as usize;
+        let tile = (width - GAP * (columns as f32 - 1.0)) / columns as f32;
+        let rows = self.assets.len().div_ceil(columns);
+        let mut open = None;
+        let mut near_end = false;
+        egui::ScrollArea::vertical().id_salt("photo_grid").auto_shrink(false).show_rows(ui, tile + GAP, rows, |ui, range| {
+            ui.spacing_mut().item_spacing = Vec2::splat(GAP);
+            near_end = range.end + 4 >= rows;
+            for row in range {
+                ui.horizontal(|ui| {
+                    for col in 0..columns {
+                        let i = row * columns + col;
+                        let Some(asset) = self.assets.get(i) else { break };
+                        let response = media::show(ui, cx.images, cx.client, BlobKind::PhotoThumbnail, &asset.id, Vec2::splat(tile));
+                        let rect = response.rect;
+                        let hover = kit::animate(ui, response.id.with("hover"), response.hovered());
+                        if hover > 0.0 {
+                            ui.painter().rect_filled(rect, theme::R_CONTROL, Color32::from_white_alpha((hover * 18.0) as u8));
+                        }
+                        let badge = |glyph: char, align: Align2, pos: egui::Pos2| {
+                            ui.painter().text(pos + egui::vec2(1.0, 1.0), align, glyph, theme::icons(14.0), Color32::from_black_alpha(160));
+                            ui.painter().text(pos, align, glyph, theme::icons(14.0), FG);
+                        };
+                        if asset.is_video {
+                            badge(icon::VIDEO, Align2::LEFT_BOTTOM, rect.left_bottom() + egui::vec2(8.0, -8.0));
+                        }
+                        if asset.favorite {
+                            badge(icon::HEART, Align2::RIGHT_BOTTOM, rect.right_bottom() + egui::vec2(-8.0, -8.0));
+                        }
+                        if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            open = Some(i);
+                        }
                     }
                 });
-                return;
-            }
-            let columns = ((ui.available_width() + GAP) / (TILE + GAP)).floor().max(1.0) as usize;
-            let rows = self.assets.len().div_ceil(columns);
-            let mut open = None;
-            let mut near_end = false;
-            egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, TILE + GAP, rows, |ui, range| {
-                near_end = range.end + 4 >= rows;
-                for row in range {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = GAP;
-                        for col in 0..columns {
-                            let i = row * columns + col;
-                            let Some(asset) = self.assets.get(i) else { break };
-                            let response = media::show(ui, cx.images, cx.client, BlobKind::PhotoThumbnail, &asset.id, Vec2::splat(TILE));
-                            if asset.is_video {
-                                ui.painter().text(response.rect.left_bottom() + egui::vec2(6.0, -6.0), egui::Align2::LEFT_BOTTOM, "▶", egui::FontId::proportional(14.0), egui::Color32::WHITE);
-                            }
-                            if asset.favorite {
-                                ui.painter().text(response.rect.right_bottom() + egui::vec2(-6.0, -6.0), egui::Align2::RIGHT_BOTTOM, "♥", egui::FontId::proportional(14.0), egui::Color32::WHITE);
-                            }
-                            if response.clicked() {
-                                open = Some(i);
-                            }
-                        }
-                    });
-                }
-            });
-            if near_end {
-                self.load_more(cx);
-            }
-            if open.is_some() {
-                self.viewing = open;
             }
         });
+        if near_end {
+            self.load_more(cx);
+        }
+        if open.is_some() {
+            self.viewing = open;
+        }
     }
 
     fn lightbox(&mut self, ui: &mut egui::Ui, cx: &mut Cx, index: usize) {
@@ -186,30 +189,36 @@ impl PhotosPage {
             return;
         };
         let (left, right, escape) = ui.input(|i| (i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight), i.key_pressed(egui::Key::Escape)));
-        egui::Panel::top("lightbox_bar").show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                if ui.button("← Back").clicked() || escape {
-                    self.viewing = None;
-                }
-                ui.label(util::long_time(asset.created));
-                ui.label(RichText::new(format!("{} × {}", asset.width, asset.height)).weak());
+        ui.horizontal(|ui| {
+            if kit::icon_button(ui, icon::BACK, "Back (Esc)").clicked() || escape {
+                self.viewing = None;
+            }
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.label(kit::title(util::long_time(asset.created)));
+                let mut meta = format!("{} × {}", asset.width, asset.height);
                 if asset.is_video {
-                    ui.label(RichText::new("Video (still frame)").weak());
+                    meta.push_str(" · video, still frame");
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Save").clicked() {
-                        cx.download(BlobKind::Photo, asset.id.clone(), format!("photo-{}.jpg", asset.created));
-                    }
-                });
+                ui.label(kit::subtle(meta));
             });
-            ui.add_space(4.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if kit::primary(ui, Some(icon::DOWNLOAD), "Save", true).clicked() {
+                    cx.download(BlobKind::Photo, asset.id.clone(), format!("photo-{}.jpg", asset.created));
+                }
+                ui.label(egui::RichText::new(format!("{} / {}", index + 1, self.assets.len())).color(FG_SUBTLE));
+                if kit::icon_button(ui, icon::RIGHT, "Next (→)").clicked() && index + 1 < self.assets.len() {
+                    self.viewing = Some(index + 1);
+                }
+                if kit::icon_button(ui, icon::LEFT, "Previous (←)").clicked() && index > 0 {
+                    self.viewing = Some(index - 1);
+                }
+            });
         });
-        egui::CentralPanel::default().show(ui, |ui| {
-            let size = ui.available_size();
-            ui.centered_and_justified(|ui| {
-                media::show(ui, cx.images, cx.client, BlobKind::Photo, &asset.id, size);
-            });
+        ui.add_space(12.0);
+        let size = ui.available_size();
+        ui.centered_and_justified(|ui| {
+            media::show(ui, cx.images, cx.client, BlobKind::Photo, &asset.id, size);
         });
         if left && index > 0 {
             self.viewing = Some(index - 1);

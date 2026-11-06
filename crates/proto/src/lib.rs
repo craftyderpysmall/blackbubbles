@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Milliseconds since the Unix epoch.
 pub type Timestamp = i64;
@@ -172,6 +172,9 @@ pub struct Chat {
     pub participants: Vec<String>,
     pub service: Service,
     pub last_message: Option<Message>,
+    /// Which of *your* addresses this conversation uses (phone number or email).
+    /// Replies always go out from this address.
+    pub my_address: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

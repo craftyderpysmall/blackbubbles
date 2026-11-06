@@ -89,26 +89,36 @@ impl Messages {
             // macOS 11+ keeps an indexed copy of the date in the join table; using it avoids
             // touching every message row, which matters on large histories.
             let has_join_date = util::columns(conn, "chat_message_join").iter().any(|c| c == "message_date");
+            // Your own address for the chat: `last_addressed_handle` (newer macOS) or
+            // `account_login` ("E:me@icloud.com" / "P:+15551234567").
+            let chat_cols = util::columns(conn, "chat");
+            let mine = ["last_addressed_handle", "account_login"]
+                .iter()
+                .filter(|c| chat_cols.iter().any(|have| have == *c))
+                .map(|c| format!("NULLIF(c.{c}, '')"))
+                .chain(["NULL".to_string()])
+                .collect::<Vec<_>>()
+                .join(", ");
             let sql = if has_join_date {
-                "SELECT c.ROWID, c.guid, c.display_name, c.chat_identifier, c.service_name, MAX(cmj.message_date) AS last
+                format!("SELECT c.ROWID, c.guid, c.display_name, c.chat_identifier, c.service_name, MAX(cmj.message_date) AS last, COALESCE({mine})
                  FROM chat c JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
                  GROUP BY c.ROWID HAVING ?1 IS NULL OR last < ?1
-                 ORDER BY last DESC LIMIT ?2"
+                 ORDER BY last DESC LIMIT ?2")
             } else {
-                "SELECT c.ROWID, c.guid, c.display_name, c.chat_identifier, c.service_name, MAX(m.date) AS last
+                format!("SELECT c.ROWID, c.guid, c.display_name, c.chat_identifier, c.service_name, MAX(m.date) AS last, COALESCE({mine})
                  FROM chat c JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
                  JOIN message m ON m.ROWID = cmj.message_id
                  GROUP BY c.ROWID HAVING ?1 IS NULL OR last < ?1
-                 ORDER BY last DESC LIMIT ?2"
+                 ORDER BY last DESC LIMIT ?2")
             };
-            let mut stmt = conn.prepare_cached(sql).map_err(sql_err)?;
+            let mut stmt = conn.prepare(&sql).map_err(sql_err)?;
             let before = before.map(unix_ms_to_apple_nanos);
-            let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>)> = stmt
-                .query_map(params![before, limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>, Option<String>)> = stmt
+                .query_map(params![before, limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(6)?)))
                 .and_then(Iterator::collect)
                 .map_err(sql_err)?;
             let mut chats = Vec::with_capacity(rows.len());
-            for (rowid, guid, display_name, identifier, service_name) in rows {
+            for (rowid, guid, display_name, identifier, service_name, mine) in rows {
                 let mut handles = conn
                     .prepare_cached(
                         "SELECT h.id FROM chat_handle_join chj JOIN handle h ON h.ROWID = chj.handle_id WHERE chj.chat_id = ?1",
@@ -128,7 +138,8 @@ impl Messages {
                     .map_err(sql_err)?
                     .map(|(_, m, _)| m);
                 let display_name = display_name.filter(|n| !n.is_empty()).or(identifier);
-                chats.push(Chat { guid, display_name, participants, service: service(service_name.as_deref()), last_message });
+                let my_address = mine.map(|m| m.strip_prefix("E:").or_else(|| m.strip_prefix("P:")).unwrap_or(&m).to_string());
+                chats.push(Chat { guid, display_name, participants, service: service(service_name.as_deref()), last_message, my_address });
             }
             Ok(Response::Chats(chats))
         })
@@ -271,7 +282,7 @@ pub(crate) mod tests {
     pub fn fixture(path: &Path) {
         let conn = Connection::open(path).unwrap();
         conn.execute_batch(
-            "CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, guid TEXT, display_name TEXT, chat_identifier TEXT, service_name TEXT);
+            "CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, guid TEXT, display_name TEXT, chat_identifier TEXT, service_name TEXT, account_login TEXT);
              CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
              CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
              CREATE TABLE message (ROWID INTEGER PRIMARY KEY, guid TEXT, text TEXT, attributedBody BLOB, is_from_me INTEGER,
@@ -279,8 +290,8 @@ pub(crate) mod tests {
              CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
              CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, guid TEXT, filename TEXT, mime_type TEXT, transfer_name TEXT, total_bytes INTEGER);
              CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
-             INSERT INTO chat VALUES (1, 'iMessage;-;+15550001', '', '+15550001', 'iMessage');
-             INSERT INTO chat VALUES (2, 'SMS;-;55512', NULL, '55512', 'SMS');
+             INSERT INTO chat VALUES (1, 'iMessage;-;+15550001', '', '+15550001', 'iMessage', 'P:+15559999');
+             INSERT INTO chat VALUES (2, 'SMS;-;55512', NULL, '55512', 'SMS', 'E:me@icloud.com');
              INSERT INTO handle VALUES (1, '+15550001'), (2, '55512');
              INSERT INTO chat_handle_join VALUES (1, 1), (2, 2);
              INSERT INTO message VALUES (1, 'g1', 'hello', NULL, 0, 700000000000000000, 1, 'iMessage', 0);
@@ -327,6 +338,8 @@ pub(crate) mod tests {
         assert_eq!(chats[0].guid, "SMS;-;55512");
         assert_eq!(chats[0].service, Service::Sms);
         assert_eq!(chats[1].display_name.as_deref(), Some("+15550001"));
+        assert_eq!(chats[1].my_address.as_deref(), Some("+15559999"));
+        assert_eq!(chats[0].my_address.as_deref(), Some("me@icloud.com"));
         // The tapback (associated_message_type 2000) is not the last message.
         assert_eq!(chats[1].last_message.as_ref().unwrap().text.as_deref(), Some("hi back"));
 

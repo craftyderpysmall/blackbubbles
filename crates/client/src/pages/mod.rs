@@ -10,8 +10,12 @@ use std::sync::mpsc::Sender;
 
 use bb_proto::BlobKind;
 
+use crate::config::Config;
 use crate::conn::Client;
 use crate::media::Images;
+
+/// Width classes for responsive layouts.
+pub const NARROW: f32 = 760.0;
 
 /// What every page gets each frame.
 pub struct Cx<'a> {
@@ -19,11 +23,18 @@ pub struct Cx<'a> {
     pub images: &'a mut Images,
     pub connected: bool,
     pub notices: Sender<String>,
+    pub config: &'a mut Config,
+    /// Set when `config` was changed and must be saved.
+    pub dirty: &'a mut bool,
 }
 
 impl Cx<'_> {
     pub fn toast(&self, message: impl Into<String>) {
         let _ = self.notices.send(message.into());
+    }
+
+    pub fn save(&mut self) {
+        *self.dirty = true;
     }
 
     /// Fetch a blob and save it to ~/Downloads, reporting the result as a toast.

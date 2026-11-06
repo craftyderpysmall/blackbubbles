@@ -4,9 +4,11 @@ mod app;
 mod beacon;
 mod config;
 mod conn;
-mod fonts;
+mod kit;
 mod media;
+mod notify;
 mod pages;
+mod theme;
 mod util;
 
 use std::fs::File;
@@ -39,28 +41,30 @@ enum Command {
     },
 }
 
-/// Only one process autofills: whoever holds this lock (the daemon, if running).
-fn autofill_lock() -> Option<File> {
+/// One process is "primary" and does autofill and notifications: whoever holds this
+/// lock (the daemon, if it runs; otherwise the window).
+fn primary_lock() -> Option<File> {
     let dir = config::dir().ok()?;
     std::fs::create_dir_all(&dir).ok()?;
-    let file = File::options().create(true).truncate(false).write(true).open(dir.join("autofill.lock")).ok()?;
+    let file = File::options().create(true).truncate(false).write(true).open(dir.join("primary.lock")).ok()?;
     file.try_lock().ok()?;
     Some(file)
 }
 
-fn start_autofill(config: &config::Config) -> (Option<bb_autofill::Autofill>, Option<File>) {
-    if !config.autofill.enabled {
-        return (None, None);
-    }
-    let Some(lock) = autofill_lock() else {
-        info!("autofill is handled by another BlackBubbles process");
+/// Returns the lock (if this process is primary) and the running autofill engine.
+fn start_primary(config: &config::Config) -> (Option<File>, Option<bb_autofill::Autofill>) {
+    let Some(lock) = primary_lock() else {
+        info!("another BlackBubbles process handles autofill and notifications");
         return (None, None);
     };
+    if !config.autofill.enabled {
+        return (Some(lock), None);
+    }
     match bb_autofill::start(&config.autofill) {
-        Ok(tx) => (Some(tx), Some(lock)),
+        Ok(af) => (Some(lock), Some(af)),
         Err(err) => {
             warn!("autofill disabled: {err:#}");
-            (None, None)
+            (Some(lock), None)
         }
     }
 }
@@ -121,11 +125,19 @@ fn main() -> Result<()> {
         }
         Some(Command::Daemon) => {
             let config = config::Config::load()?;
-            let (autofill, _lock) = start_autofill(&config);
+            let (lock, autofill) = start_primary(&config);
             let client = conn::Client::new(runtime.handle().clone(), config.server.clone());
             if let Some(af) = autofill.as_ref().filter(|_| config.autofill.from_server) {
                 client.set_autofill(af.tx.clone());
             }
+            let shared = std::sync::Arc::new(std::sync::RwLock::new(config.notifications.clone()));
+            let _notifier = lock.is_some().then(|| {
+                let _guard = runtime.enter();
+                notify::Notifier::start(&client, shared.clone(), autofill.is_some() && config.autofill.notify)
+            });
+            // Pick up notification settings changed in the window without a restart.
+            let modified = || config::path().ok().and_then(|p| std::fs::metadata(p).ok()).and_then(|m| m.modified().ok());
+            let mut seen = modified();
             info!("BlackBubbles daemon running");
             runtime.block_on(async {
                 let mut last = None;
@@ -137,6 +149,14 @@ fn main() -> Result<()> {
                         _ = &mut shutdown => break,
                         _ = tick.tick() => {
                             client.take_events();
+                            let now = modified();
+                            if now != seen {
+                                seen = now;
+                                if let Ok(fresh) = config::Config::load() {
+                                    *shared.write().unwrap() = fresh.notifications;
+                                    info!("reloaded notification settings");
+                                }
+                            }
                             let status = client.status();
                             if last.as_ref() != Some(&status) {
                                 info!("connection: {status:?}");
@@ -157,7 +177,8 @@ fn main() -> Result<()> {
                 Ok(c) => (c, None),
                 Err(e) => (config::Config::default(), Some(format!("{e:#}"))),
             };
-            let (autofill, lock) = start_autofill(&config);
+            let (lock, autofill) = start_primary(&config);
+            let primary = lock.is_some();
             let on_exit = autofill.clone();
             let autofill = autofill.map(|af| af.tx);
             let rt = runtime.handle().clone();
@@ -172,7 +193,7 @@ fn main() -> Result<()> {
             let result = eframe::run_native(
                 "BlackBubbles",
                 options,
-                Box::new(move |cc| Ok(Box::new(app::App::new(cc, rt, config, autofill, startup_error)))),
+                Box::new(move |cc| Ok(Box::new(app::App::new(cc, rt, config, autofill, primary, startup_error)))),
             );
             if let Some(af) = on_exit {
                 af.shutdown();

@@ -1,8 +1,10 @@
 use bb_proto::{ApiError, Event, NoteFolder, NoteSummary, Request, Response};
-use eframe::egui::{self, RichText};
+use eframe::egui::{self, Align, Align2, Layout, Margin, RichText};
 
 use crate::conn::Pending;
-use crate::pages::Cx;
+use crate::kit::{self, icon};
+use crate::pages::{Cx, NARROW};
+use crate::theme::{self, FG, FG_MUTED, FG_SUBTLE};
 use crate::util;
 
 type Req = Pending<Result<Response, ApiError>>;
@@ -31,12 +33,11 @@ impl NotesPage {
         self.notes_req = Some(cx.client.call(Request::ListNotes { folder_id: self.folder.clone() }));
     }
 
-    pub fn on_event(&mut self, event: &Event, cx: &Cx) {
+    pub fn on_event(&mut self, event: &Event, cx: &mut Cx) {
         if matches!(event, Event::NotesChanged) && self.loaded {
             self.refresh(cx);
-            // Reload the open note unless there are unsaved edits.
             if let Some(id) = self.open_id.clone()
-                && self.body == self.saved_body
+                && !self.dirty()
             {
                 self.note_req = Some(cx.client.call(Request::GetNote { id }));
             }
@@ -94,6 +95,9 @@ impl NotesPage {
     }
 
     fn open(&mut self, id: String, cx: &Cx) {
+        if self.dirty() {
+            self.save(cx);
+        }
         self.note_req = Some(cx.client.call(Request::GetNote { id: id.clone() }));
         self.open_id = Some(id);
         self.body.clear();
@@ -112,83 +116,139 @@ impl NotesPage {
             self.refresh(cx);
         }
         self.poll(cx);
+        if ui.available_width() < NARROW {
+            if self.open_id.is_some() {
+                kit::card(ui, |ui| self.editor(ui, cx, true));
+            } else {
+                kit::bare_card(ui, |ui| self.list(ui, cx));
+            }
+        } else {
+            let left = (ui.available_width() * 0.32).clamp(280.0, 380.0);
+            let (l, r) = kit::split_h(ui, left);
+            kit::area(ui, l, |ui| kit::bare_card(ui, |ui| self.list(ui, cx)));
+            kit::area(ui, r, |ui| kit::card(ui, |ui| self.editor(ui, cx, false)));
+        }
+    }
 
-        egui::Panel::left("note_folders").resizable(true).default_size(180.0).show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.heading("Folders");
+    fn list(&mut self, ui: &mut egui::Ui, cx: &mut Cx) {
+        egui::Frame::new().inner_margin(Margin { left: 15, right: 15, top: 15, bottom: 4 }).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(kit::title("Notes"));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if kit::primary(ui, Some(icon::PLUS), "New", cx.connected).clicked() {
+                        self.create_req = Some(cx.client.call(Request::CreateNote { folder_id: self.folder.clone(), body: "New Note\n".into() }));
+                    }
+                });
+            });
             ui.add_space(4.0);
+            kit::search(ui, &mut self.filter, "Search notes");
+            ui.add_space(4.0);
+            // Folders as wrapping chips: compact enough for every width.
             let mut chosen = None;
-            if ui.selectable_label(self.folder.is_none(), "All Notes").clicked() {
-                chosen = Some(None);
-            }
-            let mut account = "";
-            for folder in &self.folders {
-                if folder.account != account {
-                    account = &folder.account;
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(account).weak().small());
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                if chip(ui, "All", self.folder.is_none()).clicked() {
+                    chosen = Some(None);
                 }
-                let label = format!("{}  {}", folder.name, folder.count);
-                if ui.selectable_label(self.folder.as_deref() == Some(folder.id.as_str()), label).clicked() {
-                    chosen = Some(Some(folder.id.clone()));
+                for folder in &self.folders {
+                    if chip(ui, &format!("{} {}", folder.name, folder.count), self.folder.as_deref() == Some(folder.id.as_str())).on_hover_text(&folder.account).clicked() {
+                        chosen = Some(Some(folder.id.clone()));
+                    }
                 }
-            }
+            });
             if let Some(folder) = chosen {
                 self.folder = folder;
                 self.notes_req = Some(cx.client.call(Request::ListNotes { folder_id: self.folder.clone() }));
             }
         });
-
-        egui::Panel::left("note_list").resizable(true).default_size(260.0).show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Search").desired_width(ui.available_width() - 48.0));
-                if ui.button("New").clicked() {
-                    self.create_req = Some(cx.client.call(Request::CreateNote { folder_id: self.folder.clone(), body: "New Note\n".into() }));
-                }
-            });
-            ui.add_space(4.0);
-            let needle = self.filter.to_lowercase();
-            let mut chosen = None;
-            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                for note in self.notes.iter().filter(|n| needle.is_empty() || n.title.to_lowercase().contains(&needle) || n.snippet.to_lowercase().contains(&needle)) {
+        let needle = self.filter.to_lowercase();
+        let notes: Vec<&NoteSummary> = self.notes.iter().filter(|n| needle.is_empty() || n.title.to_lowercase().contains(&needle) || n.snippet.to_lowercase().contains(&needle)).collect();
+        if notes.is_empty() {
+            if self.notes_req.is_some() { kit::spinner_center(ui) } else { kit::empty_state(ui, icon::NOTES, "No notes", "") }
+            return;
+        }
+        let mut chosen = None;
+        egui::Frame::new().inner_margin(Margin::symmetric(7, 4)).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("note_list").auto_shrink(false).show_rows(ui, 58.0, notes.len(), |ui, range| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                for note in &notes[range] {
                     let selected = self.open_id.as_deref() == Some(note.id.as_str());
-                    let response = ui.add(egui::Button::selectable(selected, RichText::new(&note.title).strong()).min_size(egui::vec2(ui.available_width(), 0.0)));
-                    ui.label(RichText::new(format!("{}  {}", util::short_time(note.modified), note.snippet)).weak().small());
-                    ui.separator();
+                    let response = kit::row(ui, selected, 56.0, |ui, rect| {
+                        let painter = ui.painter_at(rect.expand(6.0));
+                        let chars = (rect.width() / 7.0) as usize;
+                        painter.text(rect.left_top() + egui::vec2(0.0, 9.0), Align2::LEFT_CENTER, truncate(&note.title, chars), theme::medium(13.5), FG);
+                        let meta = format!("{}  {}", util::short_time(note.modified), note.snippet.replace('\n', " "));
+                        painter.text(rect.left_top() + egui::vec2(0.0, 29.0), Align2::LEFT_CENTER, truncate(&meta, (rect.width() / 6.2) as usize), theme::body(12.0), FG_MUTED);
+                    });
                     if response.clicked() {
                         chosen = Some(note.id.clone());
                     }
                 }
             });
-            if let Some(id) = chosen {
+        });
+        if let Some(id) = chosen {
+            self.open(id, cx);
+        }
+    }
+
+    fn editor(&mut self, ui: &mut egui::Ui, cx: &mut Cx, narrow: bool) {
+        if self.open_id.is_none() {
+            kit::empty_state(ui, icon::NOTES, "Select a note", "The first line becomes the title");
+            return;
+        }
+        let save_key = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S));
+        ui.horizontal(|ui| {
+            if narrow && kit::icon_button(ui, icon::BACK, "Back").clicked() {
                 if self.dirty() {
                     self.save(cx);
                 }
-                self.open(id, cx);
+                self.open_id = None;
             }
-        });
-
-        egui::CentralPanel::default().show(ui, |ui| {
-            if self.open_id.is_none() {
-                ui.centered_and_justified(|ui| ui.label(RichText::new("Select a note").weak().size(16.0)));
-                return;
-            }
-            if self.note_req.is_some() {
-                ui.centered_and_justified(|ui| ui.spinner());
-                return;
-            }
-            ui.horizontal(|ui| {
-                let save = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S));
-                if ui.add_enabled(self.dirty(), egui::Button::new("Save")).clicked() || (save && self.dirty()) {
+            let title = self.body.lines().next().unwrap_or("New Note").to_string();
+            ui.label(kit::title(truncate(&title, 48)));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let dirty = self.dirty();
+                if kit::primary(ui, Some(icon::CHECK), "Save", dirty).on_hover_text("Ctrl/⌘ + S").clicked() || (save_key && dirty) {
                     self.save(cx);
                 }
-                ui.label(RichText::new(if self.dirty() { "Edited" } else { "Saved" }).weak());
-                ui.label(RichText::new("· the first line is the title").weak().small());
-            });
-            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                ui.add(egui::TextEdit::multiline(&mut self.body).desired_width(f32::INFINITY).desired_rows(30).font(egui::TextStyle::Body).frame(egui::Frame::NONE));
+                let (text, dot) = if self.save_req.is_some() { ("Saving…", theme::WARNING) } else if dirty { ("Edited", theme::WARNING) } else { ("Saved", theme::SUCCESS) };
+                kit::badge(ui, text, Some(dot));
             });
         });
+        ui.add_space(12.0);
+        kit::divider(ui);
+        ui.add_space(12.0);
+        if self.open_id.is_none() {
+            return;
+        }
+        if self.note_req.is_some() {
+            kit::spinner_center(ui);
+            return;
+        }
+        egui::ScrollArea::vertical().id_salt("note_editor").auto_shrink(false).show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut self.body)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(24)
+                    .font(theme::body(14.5))
+                    .text_color(FG)
+                    .frame(egui::Frame::NONE)
+                    .hint_text(RichText::new("Start writing…").color(FG_SUBTLE)),
+            );
+        });
+    }
+}
+
+fn chip(ui: &mut egui::Ui, text: &str, selected: bool) -> egui::Response {
+    if selected { kit::outline(ui, None, text, true) } else { kit::ghost(ui, None, text) }
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max.max(4) {
+        text.to_string()
+    } else {
+        let mut out: String = text.chars().take(max.max(4) - 1).collect();
+        out.push('…');
+        out
     }
 }
