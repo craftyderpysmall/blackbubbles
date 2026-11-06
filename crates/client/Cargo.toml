@@ -1,6 +1,6 @@
 [package]
 name = "bb-client"
-description = "BlackBubbles desktop app (egui) for Linux and macOS"
+description = "BlackBubbles desktop app (Tauri) for Linux and macOS"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +8,9 @@ license.workspace = true
 [[bin]]
 name = "blackbubbles"
 path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
 bb-proto = { path = "../proto" }
@@ -28,9 +31,13 @@ base64.workspace = true
 rand.workspace = true
 serde_json.workspace = true
 rustls.workspace = true
+reqwest.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
-egui_extras = { version = "0.37", features = ["image"] }
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp", "gif", "webp"] }
-walkers = { version = "0.65", default-features = false }
-rodio = { version = "0.23", default-features = false, features = ["playback", "symphonia-aac", "symphonia-isomp4", "symphonia-wav", "symphonia-alac"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+percent-encoding = "2"
+rodio = { version = "0.23", default-features = false, features = ["playback", "symphonia-aac", "symphonia-isomp4", "symphonia-alac", "wav"] }
+
+[features]
+# Set by `tauri build`/`tauri dev`; release builds embed the UI from ui/dist.
+custom-protocol = ["tauri/custom-protocol"]

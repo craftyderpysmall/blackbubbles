@@ -1,6 +1,6 @@
 # BlackBubbles
 
-Your Apple world on **Linux and macOS** desktops: Messages, Photos, Notes, Calendar, Voice Memos and Find My. It is a native [egui](https://github.com/emilk/egui) app plus a small Rust daemon on your Mac.
+Your Apple world on **Linux and macOS** desktops: Messages, Photos, Notes, Calendar, Voice Memos and Find My. It is a [Tauri](https://tauri.app) app (Rust core, React UI on the system webview) plus a small Rust daemon on your Mac.
 
 It is not based on BlueBubbles. BlackBubbles has its own server, protocol and client.
 
@@ -60,7 +60,7 @@ Only public keys reach the beacon service. Private keys live on your client and 
 The UI follows the "Neutral" desktop theme:
 - **Look:** monochrome dark and shadcn-style. Colour is used only for state (status dots, low battery, email-address warnings).
 - **Shape:** 16 px cards, 10 px controls and pill buttons, with one inverted white primary action per surface.
-- **Type and icons:** Inter and Lucide icons, both bundled under the OFL and ISC licences.
+- **Type and icons:** Inter, Lucide icons and Noto Color Emoji, all bundled (OFL, ISC and OFL licences). Emoji render in colour everywhere, including flags, skin tones and ZWJ sequences.
 - **Motion:** quick decelerating enter and accelerating exit animations.
 - **Responsive:** the rail collapses to icons, and Messages, Notes and Find My go single-pane on narrow windows. Calendar stacks its agenda under the month and shrinks events to dots.
 
@@ -73,7 +73,8 @@ crates/server    bbd, the daemon on your Mac (--mock runs anywhere)
 crates/mac       macOS data access: chat.db, NoteStore, Voice Memos, EventKit, PhotoKit, AOSKit
 crates/findmy    Offline-Finding crypto, Apple SRP, iCloud and GSA auth
 crates/autofill  linuxautofill port: detection, IMAP, HTTP, per-desktop delivery
-crates/client    the egui app (blackbubbles)
+crates/client    the Tauri app's Rust side (blackbubbles: window, daemon, pair, beacon-setup)
+ui/              the React + Tailwind UI (Vite)
 crates/beacon    bb-beacon, the Linux BLE advertiser
 packaging/       launchd agent, .app bundling, systemd units, PKGBUILD
 ```
@@ -82,14 +83,15 @@ packaging/       launchd agent, .app bundling, systemd units, PKGBUILD
 
 1. **Mac:** follow [docs/MAC_SETUP.md](docs/MAC_SETUP.md).
 2. **Linux:** follow [docs/LINUX_SETUP.md](docs/LINUX_SETUP.md).
-3. **macOS client:** run `packaging/macos/make-app.sh` and open the resulting `BlackBubbles.app`.
+3. **macOS client:** install Node.js, run `packaging/macos/make-app.sh` and open the resulting `BlackBubbles.app`.
 
 You can try the client without a Mac by running the mock server:
 
 ```sh
 cargo run -p bb-server -- pair --host 127.0.0.1      # prints a pairing string
 cargo run -p bb-server -- run --mock --mock-codes 20 # fake data + a fake code text every 20 s
-cargo run -p bb-client                               # Settings → paste the string → Pair
+(cd ui && npm ci && npm run build)
+cargo run -p bb-client --features custom-protocol    # Settings → paste the string → Pair
 ```
 
 ## Security

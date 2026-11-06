@@ -1,14 +1,12 @@
 //! BlackBubbles: your Apple world on Linux and macOS.
 
-mod app;
+mod audio;
 mod beacon;
+mod blob;
+mod commands;
 mod config;
 mod conn;
-mod kit;
-mod media;
 mod notify;
-mod pages;
-mod theme;
 mod util;
 
 use std::fs::File;
@@ -85,7 +83,7 @@ async fn shutdown_signal() {
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,wgpu=warn,eframe=warn".into()))
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,tao=warn,wry=warn".into()))
         .init();
     // reqwest (map tiles) and our sockets share rustls with the ring provider.
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -131,9 +129,10 @@ fn main() -> Result<()> {
                 client.set_autofill(af.tx.clone());
             }
             let shared = std::sync::Arc::new(std::sync::RwLock::new(config.notifications.clone()));
+            let unfocused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let _notifier = lock.is_some().then(|| {
                 let _guard = runtime.enter();
-                notify::Notifier::start(&client, shared.clone(), autofill.is_some() && config.autofill.notify)
+                notify::Notifier::start(&client, shared.clone(), unfocused, autofill.is_some() && config.autofill.notify)
             });
             // Pick up notification settings changed in the window without a restart.
             let modified = || config::path().ok().and_then(|p| std::fs::metadata(p).ok()).and_then(|m| m.modified().ok());
@@ -148,7 +147,6 @@ fn main() -> Result<()> {
                     tokio::select! {
                         _ = &mut shutdown => break,
                         _ = tick.tick() => {
-                            client.take_events();
                             let now = modified();
                             if now != seen {
                                 seen = now;
@@ -180,26 +178,58 @@ fn main() -> Result<()> {
             let (lock, autofill) = start_primary(&config);
             let primary = lock.is_some();
             let on_exit = autofill.clone();
-            let autofill = autofill.map(|af| af.tx);
-            let rt = runtime.handle().clone();
-            let options = eframe::NativeOptions {
-                viewport: eframe::egui::ViewportBuilder::default()
-                    .with_title("BlackBubbles")
-                    .with_app_id("blackbubbles")
-                    .with_inner_size([1180.0, 760.0])
-                    .with_min_inner_size([720.0, 480.0]),
-                ..Default::default()
-            };
-            let result = eframe::run_native(
-                "BlackBubbles",
-                options,
-                Box::new(move |cc| Ok(Box::new(app::App::new(cc, rt, config, autofill, primary, startup_error)))),
-            );
+            let state = commands::AppState::new(runtime.handle().clone(), config, autofill.map(|af| af.tx), primary, startup_error);
+            let result = run_gui(&runtime, state);
             if let Some(af) = on_exit {
                 af.shutdown();
             }
             drop(lock);
-            result.map_err(|e| anyhow::anyhow!("{e}"))
+            result
         }
     }
+}
+
+fn run_gui(runtime: &tokio::runtime::Runtime, state: commands::AppState) -> Result<()> {
+    use tauri::Manager;
+    // Tauri, the connection and the bb:// handler all share one runtime.
+    tauri::async_runtime::set(runtime.handle().clone());
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(state)
+        .register_asynchronous_uri_scheme_protocol("bb", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let state = app.state::<commands::AppState>();
+                responder.respond(blob::handle(&state.blobs, state.client(), request).await);
+            });
+        })
+        .setup(|app| {
+            app.state::<commands::AppState>().connect(app.handle());
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(focused) = event {
+                window.state::<commands::AppState>().focused.store(*focused, std::sync::atomic::Ordering::Relaxed);
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::bootstrap,
+            commands::request,
+            commands::send_attachment,
+            commands::save_blob,
+            commands::pair,
+            commands::beacon_setup,
+            commands::save_notifications,
+            commands::save_autofill,
+            commands::autofill_http,
+            commands::gmail_add,
+            commands::gmail_remove,
+            commands::audio_play,
+            commands::audio_toggle,
+            commands::audio_seek,
+            commands::audio_stop,
+            commands::audio_state,
+        ])
+        .run(tauri::generate_context!())
+        .context("running the window")
 }

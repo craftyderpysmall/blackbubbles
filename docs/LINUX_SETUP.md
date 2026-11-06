@@ -12,11 +12,15 @@ cd blackbubbles/packaging/linux && makepkg -si
 From source on any distro:
 
 ```sh
-sudo pacman -S --needed rust dbus alsa-lib libxkbcommon wayland wl-clipboard wtype   # Arch
-# Debian/Ubuntu: sudo apt install cargo libdbus-1-dev libasound2-dev libxkbcommon-dev libwayland-dev wl-clipboard wtype
-cargo build --release -p bb-client -p bb-beacon
+sudo pacman -S --needed rust nodejs npm webkit2gtk-4.1 gtk3 libsoup3 dbus alsa-lib libxkbcommon wayland wl-clipboard wtype   # Arch
+# Debian/Ubuntu: sudo apt install cargo nodejs npm libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libdbus-1-dev libasound2-dev libxkbcommon-dev libwayland-dev wl-clipboard wtype
+(cd ui && npm ci && npm run build)
+cargo build --release -p bb-client --features custom-protocol   # embeds ui/dist
+cargo build --release -p bb-beacon
 sudo install -m755 target/release/blackbubbles target/release/bb-beacon /usr/bin/
 ```
+
+The window is a Tauri app on the system WebKitGTK. Colour emoji are bundled, so no emoji font is needed.
 
 ## Pair
 

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "BlackBubbles",
+  "mainBinaryName": "blackbubbles",
+  "identifier": "com.craftyderpysmall.blackbubbles",
+  "build": {
+    "frontendDist": "../../ui/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": { "script": "npm run dev", "cwd": "../../ui", "wait": false },
+    "beforeBuildCommand": { "script": "npm run build", "cwd": "../../ui" }
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "BlackBubbles",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 380,
+        "minHeight": 480,
+        "dragDropEnabled": false,
+        "backgroundColor": "#0a0a0a"
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "img-src": "'self' bb: http://bb.localhost data: blob:",
+        "media-src": "'self' bb: http://bb.localhost blob:",
+        "style-src": "'self' 'unsafe-inline'",
+        "font-src": "'self' data:",
+        "connect-src": "ipc: http://ipc.localhost bb: http://bb.localhost"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "SocialNetworking",
+    "shortDescription": "Your Apple world on Linux and macOS",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "macOS": { "minimumSystemVersion": "13.0" },
+    "linux": { "deb": { "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"] } }
+  }
+}

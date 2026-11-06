@@ -1,5 +1,6 @@
 //! Connection to `bbd`: one background task owns the WebSocket, reconnects with backoff,
-//! matches responses to requests and queues server events for the UI.
+//! matches responses to requests and hands server events and status changes to hooks
+//! (the webview bridge, the notifier, autofill).
 
 use std::collections::HashMap;
 use std::sync::mpsc as std_mpsc;
@@ -13,7 +14,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::config::ServerConfig;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "state", content = "detail")]
 pub enum Status {
     NotPaired,
     Connecting,
@@ -25,41 +27,20 @@ type Reply = oneshot::Sender<Result<Response, ApiError>>;
 
 struct Inner {
     status: Mutex<Status>,
-    events: Mutex<Vec<Event>>,
-    repaint: Mutex<Option<eframe::egui::Context>>,
     autofill: Mutex<Option<std_mpsc::Sender<bb_autofill::Incoming>>>,
-    hook: Mutex<Option<EventHook>>,
+    hooks: Mutex<Vec<EventHook>>,
+    status_hooks: Mutex<Vec<StatusHook>>,
+    closed: tokio::sync::watch::Sender<bool>,
 }
 
 pub type EventHook = Arc<dyn Fn(&Event) + Send + Sync>;
+pub type StatusHook = Arc<dyn Fn(&Status) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct Client {
     inner: Arc<Inner>,
     tx: Option<mpsc::UnboundedSender<(Request, Reply)>>,
     rt: tokio::runtime::Handle,
-}
-
-/// A result the UI polls each frame.
-pub struct Pending<T> {
-    rx: std_mpsc::Receiver<T>,
-    value: Option<T>,
-}
-
-impl<T> Pending<T> {
-    pub fn ready(&mut self) -> Option<&T> {
-        if self.value.is_none()
-            && let Ok(v) = self.rx.try_recv()
-        {
-            self.value = Some(v);
-        }
-        self.value.as_ref()
-    }
-
-    pub fn take(&mut self) -> Option<T> {
-        self.ready();
-        self.value.take()
-    }
 }
 
 fn offline() -> ApiError {
@@ -70,10 +51,10 @@ impl Client {
     pub fn new(rt: tokio::runtime::Handle, server: Option<ServerConfig>) -> Self {
         let inner = Arc::new(Inner {
             status: Mutex::new(if server.is_some() { Status::Connecting } else { Status::NotPaired }),
-            events: Mutex::default(),
-            repaint: Mutex::default(),
             autofill: Mutex::default(),
-            hook: Mutex::default(),
+            hooks: Mutex::default(),
+            status_hooks: Mutex::default(),
+            closed: tokio::sync::watch::channel(false).0,
         });
         let tx = server.map(|server| {
             let (tx, rx) = mpsc::unbounded_channel();
@@ -83,25 +64,35 @@ impl Client {
         Self { inner, tx, rt }
     }
 
-    pub fn set_repaint(&self, ctx: eframe::egui::Context) {
-        *self.inner.repaint.lock().unwrap() = Some(ctx);
-    }
-
     pub fn set_autofill(&self, tx: std_mpsc::Sender<bb_autofill::Incoming>) {
         *self.inner.autofill.lock().unwrap() = Some(tx);
     }
 
-    /// Called for every server event (used by the notifier).
-    pub fn set_event_hook(&self, hook: EventHook) {
-        *self.inner.hook.lock().unwrap() = Some(hook);
+    /// Called for every server event.
+    pub fn on_event(&self, hook: EventHook) {
+        self.inner.hooks.lock().unwrap().push(hook);
+    }
+
+    /// Called whenever the connection status changes.
+    pub fn on_status(&self, hook: StatusHook) {
+        self.inner.status_hooks.lock().unwrap().push(hook);
+    }
+
+    /// Stop the connection task and the notifier's poll loop (after re-pairing).
+    pub fn close(&self) {
+        let _ = self.inner.closed.send(true);
+        self.inner.hooks.lock().unwrap().clear();
+        self.inner.status_hooks.lock().unwrap().clear();
+    }
+
+    /// Resolves once [`close`](Self::close) has been called.
+    pub async fn closed(&self) {
+        let mut rx = self.inner.closed.subscribe();
+        let _ = rx.wait_for(|closed| *closed).await;
     }
 
     pub fn status(&self) -> Status {
         self.inner.status.lock().unwrap().clone()
-    }
-
-    pub fn take_events(&self) -> Vec<Event> {
-        std::mem::take(&mut *self.inner.events.lock().unwrap())
     }
 
     pub async fn request(&self, req: Request) -> Result<Response, ApiError> {
@@ -109,17 +100,6 @@ impl Client {
         let (reply_tx, reply_rx) = oneshot::channel();
         tx.send((req, reply_tx)).map_err(|_| offline())?;
         reply_rx.await.map_err(|_| offline())?
-    }
-
-    /// Fire a request; the result arrives in the returned [`Pending`] and triggers a repaint.
-    pub fn call(&self, req: Request) -> Pending<Result<Response, ApiError>> {
-        let (tx, rx) = std_mpsc::channel();
-        let this = self.clone();
-        self.rt.spawn(async move {
-            let _ = tx.send(this.request(req).await);
-            this.repaint();
-        });
-        Pending { rx, value: None }
     }
 
     /// Download a whole blob in chunks.
@@ -143,36 +123,24 @@ impl Client {
         }
     }
 
-    pub fn fetch_blob(&self, kind: BlobKind, id: String) -> Pending<Result<(Vec<u8>, Option<String>), ApiError>> {
-        let (tx, rx) = std_mpsc::channel();
-        let this = self.clone();
-        self.rt.spawn(async move {
-            let _ = tx.send(this.blob(kind, id).await);
-            this.repaint();
-        });
-        Pending { rx, value: None }
-    }
-
     pub fn spawn<F: std::future::Future<Output = ()> + Send + 'static>(&self, f: F) {
         self.rt.spawn(f);
     }
 
-    fn repaint(&self) {
-        if let Some(ctx) = &*self.inner.repaint.lock().unwrap() {
-            ctx.request_repaint();
-        }
-    }
 }
 
 impl Inner {
     fn set_status(&self, status: Status) {
-        *self.status.lock().unwrap() = status;
-        self.repaint();
-    }
-
-    fn repaint(&self) {
-        if let Some(ctx) = &*self.repaint.lock().unwrap() {
-            ctx.request_repaint();
+        {
+            let mut current = self.status.lock().unwrap();
+            if *current == status {
+                return;
+            }
+            *current = status.clone();
+        }
+        let hooks = self.status_hooks.lock().unwrap().clone();
+        for hook in hooks {
+            hook(&status);
         }
     }
 
@@ -187,21 +155,27 @@ impl Inner {
                 links: vec![],
             });
         }
-        let hook = self.hook.lock().unwrap().clone();
-        if let Some(hook) = hook {
+        let hooks = self.hooks.lock().unwrap().clone();
+        for hook in hooks {
             hook(&event);
         }
-        self.events.lock().unwrap().push(event);
-        self.repaint();
     }
 }
 
-async fn run(inner: Arc<Inner>, server: ServerConfig, mut rx: mpsc::UnboundedReceiver<(Request, Reply)>) {
+async fn run(inner: Arc<Inner>, server: ServerConfig, rx: mpsc::UnboundedReceiver<(Request, Reply)>) {
+    let mut closed = inner.closed.subscribe();
+    tokio::select! {
+        _ = closed.wait_for(|c| *c) => {}
+        _ = connect_loop(&inner, server, rx) => {}
+    }
+}
+
+async fn connect_loop(inner: &Arc<Inner>, server: ServerConfig, mut rx: mpsc::UnboundedReceiver<(Request, Reply)>) {
     let mut backoff = Duration::from_secs(1);
     loop {
         inner.set_status(Status::Connecting);
         let mut connected = false;
-        let result = session(&inner, &server, &mut rx, &mut connected).await;
+        let result = session(inner, &server, &mut rx, &mut connected).await;
         match result {
             Ok(()) => return, // the client was dropped
             Err(err) => inner.set_status(Status::Disconnected(format!("{err:#}"))),

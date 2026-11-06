@@ -4,3 +4,6 @@
 *.pem
 *.key
 config.toml
+/crates/client/gen
+node_modules/
+/ui/dist

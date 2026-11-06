@@ -1,0 +1,189 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { ArrowLeft, Check, NotebookPen, Plus } from "lucide-react";
+import { api, errorText, type NoteSummary } from "@/lib/bb";
+import { keys } from "@/lib/events";
+import { NARROW_BELOW, useApp, useWidth } from "@/lib/app";
+import { shortTime } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import { Badge, Button, Card, Center, Chip, EmptyState, IconButton, SearchInput, Spinner } from "@/components/ui";
+
+export default function NotesPage() {
+  const { connected, toast } = useApp();
+  const qc = useQueryClient();
+  const [ref, width] = useWidth<HTMLDivElement>();
+  const [folder, setFolder] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+  const [open, setOpen] = useState<string | null>(null);
+  const [body, setBody] = useState("");
+  const [saved, setSaved] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  const folders = useQuery({ queryKey: keys.noteFolders, queryFn: api.noteFolders, enabled: connected });
+  const notes = useQuery({ queryKey: [...keys.notes, folder], queryFn: () => api.notes(folder), enabled: connected });
+  const note = useQuery({ queryKey: keys.note(open ?? ""), queryFn: () => api.note(open!), enabled: connected && !!open });
+
+  const dirty = open !== null && note.data !== undefined && body !== saved;
+  // Load the note, and reload it after a change on the Mac unless it has unsaved edits.
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+  useEffect(() => {
+    if (note.data && !dirtyRef.current) {
+      setBody(note.data.body);
+      setSaved(note.data.body);
+    }
+  }, [note.data]);
+
+  const save = useCallback(async () => {
+    if (!open || body === saved) return;
+    const [id, text] = [open, body];
+    setSaving(true);
+    try {
+      await api.updateNote(id, text);
+      setSaved(text);
+      void qc.invalidateQueries({ queryKey: keys.notes });
+    } catch (err) {
+      toast(`Not saved: ${errorText(err)}`);
+    } finally {
+      setSaving(false);
+    }
+  }, [open, body, saved, qc, toast]);
+
+  const select = (id: string | null) => {
+    if (dirty) void save();
+    setOpen(id);
+    setBody("");
+    setSaved("");
+  };
+
+  const create = async () => {
+    setCreating(true);
+    try {
+      const { id } = await api.createNote(folder, "New Note\n");
+      await qc.invalidateQueries({ queryKey: keys.notes });
+      select(id);
+    } catch (err) {
+      toast(`Couldn't create note: ${errorText(err)}`);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void save();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [save]);
+
+  const shown = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    const list = notes.data ?? [];
+    return q ? list.filter((n) => n.title.toLowerCase().includes(q) || n.snippet.toLowerCase().includes(q)) : list;
+  }, [notes.data, filter]);
+
+  const narrow = width > 0 && width < NARROW_BELOW;
+  const listWidth = Math.min(380, Math.max(280, width * 0.34));
+  const title = body.split("\n")[0]?.trim() || note.data?.summary.title || "New Note";
+
+  return (
+    <div ref={ref} className="flex h-full gap-4">
+      {(!narrow || !open) && (
+        <Card className="flex min-w-0 flex-col overflow-hidden" style={narrow ? { flex: 1 } : { width: listWidth }}>
+          <div className="flex flex-col gap-3 p-4 pb-2">
+            <div className="flex items-center justify-between">
+              <h1 className="text-[15px] font-semibold text-fg">Notes</h1>
+              <Button variant="outline" size="sm" icon={Plus} busy={creating} disabled={!connected} onClick={create}>
+                New note
+              </Button>
+            </div>
+            <div className="flex gap-1.5 overflow-x-auto [scrollbar-width:none]">
+              <Chip active={folder === null} onClick={() => setFolder(null)}>All</Chip>
+              {folders.data?.map((f) => (
+                <Chip key={f.id} active={folder === f.id} onClick={() => setFolder(f.id)}>
+                  <span title={f.account}>{f.name}</span>
+                  <span className="opacity-60">{f.count}</span>
+                </Chip>
+              ))}
+            </div>
+            <SearchInput value={filter} onChange={setFilter} placeholder="Search notes" />
+          </div>
+          {notes.isLoading ? (
+            <Center><Spinner /></Center>
+          ) : notes.error ? (
+            <EmptyState icon={NotebookPen} title="Couldn't load notes" hint={errorText(notes.error)} />
+          ) : !shown.length ? (
+            <EmptyState icon={NotebookPen} title={filter ? "No matches" : "No notes"} hint={connected ? undefined : "Connect to your Mac in Settings."} />
+          ) : (
+            <NoteList notes={shown} open={open} onOpen={select} />
+          )}
+        </Card>
+      )}
+      {(!narrow || open) && (
+        <Card className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {!open ? (
+            <EmptyState icon={NotebookPen} title="Select a note" hint="The first line becomes the title." />
+          ) : note.isLoading ? (
+            <Center><Spinner /></Center>
+          ) : note.error ? (
+            <EmptyState icon={NotebookPen} title="Couldn't open this note" hint={errorText(note.error)} />
+          ) : (
+            <>
+              <div className="flex min-h-14 items-center gap-2 border-b border-border px-3 py-2">
+                {narrow && <IconButton icon={ArrowLeft} label="Back" onClick={() => select(null)} />}
+                <div className="min-w-0 flex-1 truncate pl-1 text-[14px] font-semibold text-fg">{title}</div>
+                <Badge dot={saving || dirty ? "var(--color-warning)" : "var(--color-success)"}>{saving ? "Saving…" : dirty ? "Edited" : "Saved"}</Badge>
+                <Button variant="primary" icon={Check} disabled={!dirty} busy={saving} onClick={() => void save()} title="Ctrl/⌘ + S">
+                  Save
+                </Button>
+              </div>
+              <textarea
+                key={open}
+                autoFocus
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                spellCheck
+                className="selectable min-h-0 flex-1 resize-none bg-transparent px-6 py-5 text-[14px] leading-[1.65] text-fg outline-none placeholder:text-subtle"
+                placeholder="Start typing…"
+              />
+            </>
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function NoteList({ notes, open, onOpen }: { notes: NoteSummary[]; open: string | null; onOpen: (id: string) => void }) {
+  const scroller = useRef<HTMLDivElement>(null);
+  const virtual = useVirtualizer({ count: notes.length, getScrollElement: () => scroller.current, estimateSize: () => 66, overscan: 8 });
+  return (
+    <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+      <div style={{ height: virtual.getTotalSize(), position: "relative" }}>
+        {virtual.getVirtualItems().map((row) => {
+          const n = notes[row.index];
+          return (
+            <div key={n.id} className="absolute inset-x-0" style={{ height: row.size, transform: `translateY(${row.start}px)` }}>
+              <button
+                onClick={() => onOpen(n.id)}
+                className={cn("flex h-[62px] w-full flex-col justify-center rounded-control px-3 text-left transition-colors duration-150", n.id === open ? "bg-border" : "hover:bg-raised")}
+              >
+                <span className="flex items-baseline gap-2">
+                  <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-fg">{n.title || "New Note"}</span>
+                  <span className="shrink-0 text-[11px] text-subtle">{shortTime(n.modified)}</span>
+                </span>
+                <span className="truncate text-xs text-muted">{n.snippet || "No additional text"}</span>
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

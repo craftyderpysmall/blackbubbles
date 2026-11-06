@@ -12,20 +12,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: System libraries
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libasound2-dev libxkbcommon-dev libwayland-dev pkg-config
+      - name: System libraries (Tauri/WebKitGTK, audio, autofill)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
+            librsvg2-dev libdbus-1-dev libasound2-dev libxkbcommon-dev libwayland-dev pkg-config
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: UI (type-check + build)
+        working-directory: ui
+        run: npm ci && npm run build
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --locked
-      - run: cargo test --workspace --locked
+      # custom-protocol embeds ui/dist, as release builds do.
+      - run: cargo build --workspace --locked --features bb-client/custom-protocol
+      - run: cargo test --workspace --locked --features bb-client/custom-protocol
 
   macos:
-    # Builds and links the EventKit/PhotoKit/AOSKit code for real, and runs the tests.
+    # Builds and links the EventKit/PhotoKit/AOSKit code and the WKWebView client, and runs the tests.
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: UI (type-check + build)
+        working-directory: ui
+        run: npm ci && npm run build
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --locked
-      - run: cargo test --workspace --locked
+      - run: cargo build --workspace --locked --features bb-client/custom-protocol
+      - run: cargo test --workspace --locked --features bb-client/custom-protocol
       - name: bbd embeds its Info.plist
         run: otool -s __TEXT __info_plist target/debug/bbd | head -3

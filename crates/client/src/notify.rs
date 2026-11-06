@@ -16,7 +16,7 @@ pub struct Notifier {
     client: Client,
     settings: Shared,
     /// Whether the window has focus (always false in the daemon).
-    pub focused: Arc<AtomicBool>,
+    focused: Arc<AtomicBool>,
     /// Autofill is running in this process and notifies about codes itself.
     autofill_notifies: bool,
     chat_names: Mutex<HashMap<String, String>>,
@@ -27,18 +27,24 @@ fn send(summary: &str, body: &str) {
 }
 
 impl Notifier {
-    pub fn start(client: &Client, settings: Shared, autofill_notifies: bool) -> Arc<Self> {
+    pub fn start(client: &Client, settings: Shared, focused: Arc<AtomicBool>, autofill_notifies: bool) -> Arc<Self> {
         let this = Arc::new(Self {
             client: client.clone(),
             settings,
-            focused: Arc::new(AtomicBool::new(false)),
+            focused,
             autofill_notifies,
             chat_names: Mutex::default(),
         });
         let hook = this.clone();
-        client.set_event_hook(Arc::new(move |event| hook.on_event(event)));
+        client.on_event(Arc::new(move |event| hook.on_event(event)));
         let poller = this.clone();
-        client.spawn(async move { poller.poll_loop().await });
+        let closed = client.clone();
+        client.spawn(async move {
+            tokio::select! {
+                _ = closed.closed() => {}
+                _ = poller.poll_loop() => {}
+            }
+        });
         this
     }
 

@@ -23,6 +23,20 @@ struct State {
 pub struct MockBackend {
     state: Mutex<State>,
     code_interval: Option<Duration>,
+    /// Set by `start_events`; writes echo events like the real Mac does.
+    sink: Mutex<Option<EventSink>>,
+}
+
+impl MockBackend {
+    /// Emit an event shortly after a write, like the Mac's chat.db / store watchers.
+    fn emit_later(&self, event: Event) {
+        if let Some(sink) = self.sink.lock().unwrap().clone() {
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(500));
+                sink(event);
+            });
+        }
+    }
 }
 
 impl MockBackend {
@@ -86,6 +100,7 @@ impl MockBackend {
         Self {
             state: Mutex::new(State { chats, messages, events, notes, next_id: 100 }),
             code_interval,
+            sink: Mutex::default(),
         }
     }
 }
@@ -209,7 +224,7 @@ impl Backend for MockBackend {
             }
             Request::SendText { chat_guid, text } => {
                 state.next_id += 1;
-                state.messages.push(Message {
+                let message = Message {
                     guid: format!("sent-{}", state.next_id),
                     chat_guid,
                     sender: None,
@@ -217,10 +232,27 @@ impl Backend for MockBackend {
                     text: Some(text),
                     date: now_ms(),
                     attachments: vec![],
-                });
+                };
+                state.messages.push(message.clone());
+                self.emit_later(Event::NewMessage(message));
                 Response::Ok
             }
-            Request::SendAttachment { .. } => Response::Ok,
+            Request::SendAttachment { chat_guid, file_name, data } => {
+                state.next_id += 1;
+                let mime = if file_name.to_lowercase().ends_with(".bmp") { Some("image/bmp".to_string()) } else { None };
+                let message = Message {
+                    guid: format!("sent-{}", state.next_id),
+                    chat_guid,
+                    sender: None,
+                    is_from_me: true,
+                    text: None,
+                    date: now_ms(),
+                    attachments: vec![Attachment { guid: format!("sent-att-{}", state.next_id), mime_type: mime, file_name: Some(file_name), total_bytes: data.len() as u64 }],
+                };
+                state.messages.push(message.clone());
+                self.emit_later(Event::NewMessage(message));
+                Response::Ok
+            }
             Request::ListCalendars => Response::Calendars(vec![
                 Calendar { id: "home".into(), title: "Home".into(), color: 0x34c759, writable: true },
                 Calendar { id: "work".into(), title: "Work".into(), color: 0x007aff, writable: true },
@@ -242,10 +274,12 @@ impl Backend for MockBackend {
                     all_day: new.all_day,
                 };
                 state.events.push(created.clone());
+                self.emit_later(Event::CalendarChanged);
                 Response::Event(created)
             }
             Request::DeleteEvent { id } => {
                 state.events.retain(|e| e.id != id);
+                self.emit_later(Event::CalendarChanged);
                 Response::Ok
             }
             Request::ListNoteFolders => Response::NoteFolders(
@@ -275,12 +309,14 @@ impl Backend for MockBackend {
                 let id = format!("n{}", state.next_id);
                 let title = body.lines().next().unwrap_or("New Note").to_string();
                 state.notes.push(note(&id, folder_id.as_deref().unwrap_or("f1"), &title, &body, now_ms()));
+                self.emit_later(Event::NotesChanged);
                 Response::Created { id }
             }
             Request::UpdateNote { id, body } => {
                 let n = state.notes.iter_mut().find(|n| n.summary.id == id).ok_or_else(|| ApiError::not_found("note"))?;
                 let updated = note(&id, &n.summary.folder_id.clone(), body.lines().next().unwrap_or(""), &body, now_ms());
                 *n = updated;
+                self.emit_later(Event::NotesChanged);
                 Response::Ok
             }
             Request::ListVoiceMemos => Response::VoiceMemos(
@@ -354,6 +390,7 @@ impl Backend for MockBackend {
     }
 
     fn start_events(&self, sink: EventSink) {
+        *self.sink.lock().unwrap() = Some(sink.clone());
         let Some(interval) = self.code_interval else { return };
         std::thread::spawn(move || {
             let mut n = 0u32;
