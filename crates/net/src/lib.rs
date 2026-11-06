@@ -24,6 +24,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
+pub use tokio_rustls;
 pub use tokio_tungstenite;
 
 pub const DEFAULT_PORT: u16 = 7878;
