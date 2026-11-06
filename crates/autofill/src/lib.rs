@@ -37,9 +37,23 @@ pub struct Incoming {
     pub links: Vec<Link>,
 }
 
-/// Start the configured sources and the delivery loop. Returns a sender for messages
-/// from other sources (the client pushes iMessage/SMS from the Mac server here).
-pub fn start(config: &Config) -> anyhow::Result<Sender<Incoming>> {
+/// A running autofill engine.
+#[derive(Clone)]
+pub struct Autofill {
+    /// Push messages from other sources (the client sends iMessage/SMS from the Mac here).
+    pub tx: Sender<Incoming>,
+    deliverer: deliver::Deliverer,
+}
+
+impl Autofill {
+    /// Put the user's clipboard back now; call before exiting.
+    pub fn shutdown(&self) {
+        self.deliverer.restore_now();
+    }
+}
+
+/// Start the configured sources and the delivery loop.
+pub fn start(config: &Config) -> anyhow::Result<Autofill> {
     let (tx, rx) = channel::<Incoming>();
     let keywords = detect::keyword_regex(&config.keywords());
     let deliverer = deliver::Deliverer::new(Arc::from(platform::detect()), Duration::from_secs(config.clear_after.max(5)));
@@ -57,6 +71,7 @@ pub fn start(config: &Config) -> anyhow::Result<Sender<Incoming>> {
         std::thread::spawn(move || imap::run(account, tx));
     }
 
+    let handle = Autofill { tx: tx.clone(), deliverer: deliverer.clone() };
     std::thread::spawn(move || {
         for message in rx {
             let code = find_code_with(&message.text, &keywords);
@@ -72,5 +87,5 @@ pub fn start(config: &Config) -> anyhow::Result<Sender<Incoming>> {
             }
         }
     });
-    Ok(tx)
+    Ok(handle)
 }

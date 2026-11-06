@@ -74,13 +74,15 @@ fn data_dir(cli: &Cli) -> Result<PathBuf> {
     Ok(dirs.data_dir().join("server"))
 }
 
+/// This Mac's name for pairing strings: its Bonjour name (`<LocalHostName>.local`).
 fn local_host_name() -> String {
-    std::process::Command::new("hostname")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    let run = |cmd: &str, args: &[&str]| {
+        std::process::Command::new(cmd).args(args).output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    };
+    run("scutil", &["--get", "LocalHostName"])
+        .map(|n| format!("{n}.local"))
+        .or_else(|| std::fs::read_to_string("/proc/sys/kernel/hostname").ok().map(|s| s.trim().to_string()))
+        .or_else(|| run("hostname", &[]))
         .unwrap_or_else(|| "localhost".into())
 }
 

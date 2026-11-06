@@ -78,6 +78,20 @@ impl Deliverer {
         });
     }
 
+    /// Restore the clipboard immediately if a code is still on it (call on shutdown, so a
+    /// code is never left behind when the process exits before the timer fires).
+    pub fn restore_now(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.generation += 1; // cancel pending timers
+        if let Some(active) = state.active.take()
+            && self.platform.current_text().as_deref() == Some(active.as_str())
+        {
+            let saved = state.saved.take().flatten();
+            self.platform.restore(saved.as_ref());
+        }
+        state.saved = None;
+    }
+
     pub fn deliver_code(&self, code: &str, sender: &str) {
         if self.is_duplicate(code) {
             return;
@@ -172,6 +186,17 @@ mod tests {
         fake.copy("something else");
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(fake.current_text().as_deref(), Some("something else"));
+    }
+
+    #[test]
+    fn restore_now_puts_clipboard_back() {
+        let fake = Arc::new(Fake::default());
+        *fake.clipboard.lock().unwrap() = Some("before".into());
+        let d = Deliverer::new(fake.clone(), Duration::from_secs(60));
+        d.deliver_code("424242", "x");
+        assert_eq!(fake.current_text().as_deref(), Some("424242"));
+        d.restore_now();
+        assert_eq!(fake.current_text().as_deref(), Some("before"));
     }
 
     #[test]

@@ -80,3 +80,23 @@ impl Beacon {
         Ok(newest)
     }
 }
+
+/// What the Linux beacon service advertises: public keys only, no secrets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PublicKeys {
+    /// Seconds each key is advertised before moving to the next.
+    pub rotate_secs: u64,
+    /// Base64 28-byte advertised keys.
+    pub keys: Vec<String>,
+}
+
+impl PublicKeys {
+    /// The key to advertise at `unix_secs`.
+    pub fn current(&self, unix_secs: u64) -> Option<&str> {
+        if self.keys.is_empty() {
+            return None;
+        }
+        let slot = unix_secs / self.rotate_secs.max(1);
+        Some(&self.keys[(slot % self.keys.len() as u64) as usize])
+    }
+}
