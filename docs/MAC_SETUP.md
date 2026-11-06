@@ -13,8 +13,10 @@
 ## 2. Install
 
 ```sh
-# Rust, if you don't have it
+# Apple's compiler and linker (a dialog appears; click Install), then Rust
+xcode-select --install
 curl https://sh.rustup.rs -sSf | sh
+source "$HOME/.cargo/env"
 
 git clone https://github.com/craftyderpysmall/blackbubbles
 cd blackbubbles
