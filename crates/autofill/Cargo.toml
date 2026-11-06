@@ -8,3 +8,19 @@ license.workspace = true
 [dependencies]
 regex.workspace = true
 fancy-regex.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tiny_http = "0.12"
+mail-parser = "1"
+rustls.workspace = true
+webpki-roots = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+arboard = { version = "3", default-features = false }
+notify-rust = "4"
+enigo = "0.6"
+open = "5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mac-notification-sys = "0.6"
