@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=BlackBubbles
+Comment=Messages, Photos, Notes, Calendar, Voice Memos and Find My from your Mac
+Exec=blackbubbles
+Icon=blackbubbles
+Terminal=false
+Categories=Network;InstantMessaging;
+StartupWMClass=blackbubbles

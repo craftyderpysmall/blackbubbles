@@ -1,0 +1,15 @@
+# Headless BlackBubbles: stays connected to the Mac and autofills verification codes
+# even when the window is closed. Install to ~/.config/systemd/user/ and run:
+#   systemctl --user enable --now blackbubbles
+[Unit]
+Description=BlackBubbles autofill and connection
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/blackbubbles daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

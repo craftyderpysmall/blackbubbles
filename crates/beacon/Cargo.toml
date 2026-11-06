@@ -1,0 +1,16 @@
+[package]
+name = "bb-beacon"
+description = "Linux BLE Offline-Finding beacon: makes this PC locatable through nearby Apple devices"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bb-findmy = { path = "../findmy" }
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
