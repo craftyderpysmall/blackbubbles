@@ -86,15 +86,22 @@ impl Messages {
 
     pub fn list_chats(&self, limit: u32, before: Option<Timestamp>) -> Result<Response, ApiError> {
         self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare_cached(
-                    "SELECT c.ROWID, c.guid, c.display_name, c.chat_identifier, c.service_name, MAX(m.date) AS last
-                     FROM chat c JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
-                     JOIN message m ON m.ROWID = cmj.message_id
-                     GROUP BY c.ROWID HAVING ?1 IS NULL OR last < ?1
-                     ORDER BY last DESC LIMIT ?2",
-                )
-                .map_err(sql_err)?;
+            // macOS 11+ keeps an indexed copy of the date in the join table; using it avoids
+            // touching every message row, which matters on large histories.
+            let has_join_date = util::columns(conn, "chat_message_join").iter().any(|c| c == "message_date");
+            let sql = if has_join_date {
+                "SELECT c.ROWID, c.guid, c.display_name, c.chat_identifier, c.service_name, MAX(cmj.message_date) AS last
+                 FROM chat c JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
+                 GROUP BY c.ROWID HAVING ?1 IS NULL OR last < ?1
+                 ORDER BY last DESC LIMIT ?2"
+            } else {
+                "SELECT c.ROWID, c.guid, c.display_name, c.chat_identifier, c.service_name, MAX(m.date) AS last
+                 FROM chat c JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
+                 JOIN message m ON m.ROWID = cmj.message_id
+                 GROUP BY c.ROWID HAVING ?1 IS NULL OR last < ?1
+                 ORDER BY last DESC LIMIT ?2"
+            };
+            let mut stmt = conn.prepare_cached(sql).map_err(sql_err)?;
             let before = before.map(unix_ms_to_apple_nanos);
             let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>)> = stmt
                 .query_map(params![before, limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
@@ -285,6 +292,25 @@ pub(crate) mod tests {
              INSERT INTO message_attachment_join VALUES (2, 1);",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn uses_join_table_dates_when_present() {
+        let dir = std::env::temp_dir().join(format!("bbmac-msg2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("chat.db");
+        let _ = std::fs::remove_file(&db);
+        fixture(&db);
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE chat_message_join ADD COLUMN message_date INTEGER;
+             UPDATE chat_message_join SET message_date = (SELECT date FROM message WHERE ROWID = message_id);",
+        )
+        .unwrap();
+        drop(conn);
+        let Response::Chats(chats) = Messages::new(db, dir.clone()).list_chats(10, None).unwrap() else { panic!() };
+        assert_eq!(chats.iter().map(|c| c.guid.as_str()).collect::<Vec<_>>(), ["SMS;-;55512", "iMessage;-;+15550001"]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
