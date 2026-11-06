@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = []
+members = ["crates/proto", "crates/autofill"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,3 +11,9 @@ repository = "https://github.com/craftyderpysmall/blackbubbles"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+regex = "1"
+fancy-regex = "0.14"

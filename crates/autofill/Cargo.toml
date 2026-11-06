@@ -1,0 +1,10 @@
+[package]
+name = "bb-autofill"
+description = "Verification code and link autofill (Rust port of linuxautofill)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+regex.workspace = true
+fancy-regex.workspace = true
