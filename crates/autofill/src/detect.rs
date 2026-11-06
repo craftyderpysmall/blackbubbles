@@ -290,10 +290,10 @@ fn explicit_code(text: &str) -> Option<String> {
         if let Some(caps) = candidate_at(text, phrase.end()) {
             return Some(normalise(&caps));
         }
-        if let Some(m) = LETTERS.find(&text[phrase.end()..]) {
-            if !NOT_LETTER_CODES.contains(&m.as_str()) {
-                return Some(m.as_str().to_string());
-            }
+        if let Some(m) = LETTERS.find(&text[phrase.end()..])
+            && !NOT_LETTER_CODES.contains(&m.as_str())
+        {
+            return Some(m.as_str().to_string());
         }
     }
     None

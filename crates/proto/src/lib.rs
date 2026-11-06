@@ -12,13 +12,19 @@ pub type Timestamp = i64;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientFrame {
+    /// First frame from an already-paired device.
     Hello { protocol: u32, device_token: String },
+    /// First frame from a new device, using a one-time code from `bbd pair`.
+    Pair { protocol: u32, code: String, device_name: String },
     Request { id: u64, req: Request },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ServerFrame {
     Welcome { protocol: u32, server_name: String },
+    Paired { device_token: String },
+    /// Fatal error; the server closes the connection after sending it.
+    Rejected(ApiError),
     Response { id: u64, res: Result<Response, ApiError> },
     Event(Event),
 }
@@ -36,8 +42,51 @@ pub enum Request {
     ListVoiceMemos,
     ListAlbums,
     ListAssets { album_id: Option<String>, offset: u32, limit: u32 },
+    SendAttachment { chat_guid: String, file_name: String, data: Vec<u8> },
+    CreateEvent(NewEvent),
+    DeleteEvent { id: String },
+    CreateNote { folder_id: Option<String>, body: String },
+    UpdateNote { id: String, body: String },
     ListFindMyDevices,
+    /// Register a BLE Offline-Finding beacon. `private_keys` are 28-byte P-224 scalars.
+    RegisterBeacon { id: String, name: String, private_keys: Vec<Vec<u8>> },
+    /// Read part of a binary object (attachment, photo, recording).
+    GetBlob { kind: BlobKind, id: String, offset: u64, len: u32 },
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BlobKind {
+    Attachment,
+    PhotoThumbnail,
+    /// Full-size photo, converted to JPEG when needed.
+    Photo,
+    VoiceMemo,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NewEvent {
+    pub calendar_id: String,
+    pub title: String,
+    pub location: Option<String>,
+    pub notes: Option<String>,
+    pub start: Timestamp,
+    pub end: Timestamp,
+    pub all_day: bool,
+}
+
+/// Largest blob chunk a client should ask for.
+pub const MAX_BLOB_CHUNK: u32 = 4 * 1024 * 1024;
+
+/// A source of data for the server: the real macOS backend or a mock.
+///
+/// `handle` may block (SQLite, EventKit); the server calls it off the async runtime.
+pub trait Backend: Send + Sync + 'static {
+    fn handle(&self, req: Request) -> Result<Response, ApiError>;
+    /// Start pushing events. Called once at startup.
+    fn start_events(&self, sink: EventSink);
+}
+
+pub type EventSink = std::sync::Arc<dyn Fn(Event) + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Response {
@@ -53,6 +102,9 @@ pub enum Response {
     Albums(Vec<Album>),
     Assets(Vec<Asset>),
     FindMyDevices(Vec<FindMyDevice>),
+    Event(CalendarEvent),
+    Created { id: String },
+    Blob { data: Vec<u8>, total: u64, mime_type: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -61,12 +113,36 @@ pub struct ApiError {
     pub message: String,
 }
 
+impl ApiError {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self { code, message: message.into() }
+    }
+    pub fn internal(err: impl std::fmt::Display) -> Self {
+        Self::new(ErrorCode::Internal, err.to_string())
+    }
+    pub fn not_found(what: impl std::fmt::Display) -> Self {
+        Self::new(ErrorCode::NotFound, format!("{what} not found"))
+    }
+    pub fn unsupported(what: impl std::fmt::Display) -> Self {
+        Self::new(ErrorCode::Unsupported, format!("{what} is not supported by this server"))
+    }
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ErrorCode {
     Unauthorized,
     NotFound,
     PermissionDenied,
     Unsupported,
+    BadRequest,
     Internal,
 }
 
@@ -143,6 +219,7 @@ pub struct NoteFolder {
     pub id: String,
     pub name: String,
     pub account: String,
+    pub count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -183,6 +260,7 @@ pub struct Asset {
     pub width: u32,
     pub height: u32,
     pub is_video: bool,
+    pub favorite: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -192,6 +270,8 @@ pub struct FindMyDevice {
     pub kind: DeviceKind,
     pub location: Option<Location>,
     pub battery: Option<f32>,
+    /// e.g. "iPhone 16 Pro", "MacBook Air", "BLE beacon".
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
