@@ -272,6 +272,10 @@ export const api = {
   createNote: (folder_id: string | null, body: string) =>
     call<{ id: string }, "Created">({ CreateNote: { folder_id, body } }, "Created"),
   updateNote: (id: string, body: string) => ok({ UpdateNote: { id, body } }),
+  /** Decrypt a password-locked note (read-only). The password goes to your Mac only. */
+  unlockNote: (id: string, password: string) => call<Note, "Note">({ UnlockNote: { id, password } }, "Note"),
+  /** Move a note to Recently Deleted. */
+  deleteNote: (id: string) => ok({ DeleteNote: { id } }),
   reminderLists: () => call<ReminderList[], "ReminderLists">("ListReminderLists", "ReminderLists"),
   reminders: (list_id: string | null, include_completed: boolean) =>
     call<Reminder[], "Reminders">({ ListReminders: { list_id, include_completed } }, "Reminders"),

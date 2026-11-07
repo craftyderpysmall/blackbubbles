@@ -522,6 +522,8 @@ dependencies = [
 name = "bb-mac"
 version = "0.1.0"
 dependencies = [
+ "aes",
+ "aes-gcm",
  "anyhow",
  "bb-findmy",
  "bb-proto",
@@ -533,9 +535,11 @@ dependencies = [
  "objc2-event-kit",
  "objc2-foundation",
  "objc2-photos",
+ "pbkdf2",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

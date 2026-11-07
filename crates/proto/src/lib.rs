@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Milliseconds since the Unix epoch.
 pub type Timestamp = i64;
@@ -60,6 +60,10 @@ pub enum Request {
     DeleteReminder { id: String },
     /// Contact names for every phone number / email in Messages.
     ListContacts,
+    /// Decrypt a password-protected note (read-only). The password isn't stored.
+    UnlockNote { id: String, password: String },
+    /// Move a note to Recently Deleted.
+    DeleteNote { id: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

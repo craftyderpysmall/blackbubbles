@@ -134,6 +134,12 @@ pub fn text_to_html(text: &str) -> String {
         .collect()
 }
 
+fn self_get_unlocked(conn: &Connection, pk: i64, summary: NoteSummary) -> Result<Response, ApiError> {
+    let data: Option<Vec<u8>> =
+        conn.query_row("SELECT ZDATA FROM ZICNOTEDATA WHERE ZNOTE = ?1", [pk], |r| r.get(0)).optional().map_err(sql_err)?.flatten();
+    Ok(Response::Note(Note { summary, body: data.as_deref().and_then(decode_body).unwrap_or_default() }))
+}
+
 impl Notes {
     pub fn new(db_path: PathBuf) -> Self {
         Self { db_path, conn: Mutex::new(None) }
@@ -269,6 +275,65 @@ impl Notes {
         }
     }
 
+    /// Decrypt a note locked with a Notes password. Read-only: Notes' AppleScript can't
+    /// edit locked notes, and we never write Apple's database.
+    pub fn unlock(&self, id: &str, password: &str) -> Result<Response, ApiError> {
+        let pk = pk_from_id(id).ok_or_else(|| ApiError::not_found("note"))?;
+        self.with_conn(|conn, s| {
+            let (summary, locked) = conn
+                .query_row(&Self::summary_sql(s, "n.Z_PK = ?1"), [pk], |r| Self::summary(s, r))
+                .optional()
+                .map_err(sql_err)?
+                .ok_or_else(|| ApiError::not_found("note"))?;
+            if !locked {
+                return self_get_unlocked(conn, pk, summary);
+            }
+            let obj = columns(conn, OBJECTS);
+            let data_cols = columns(conn, "ZICNOTEDATA");
+            let o = |c: &str| if obj.iter().any(|h| h == c) { format!("n.{c}") } else { "NULL".into() };
+            let d = |c: &str| if data_cols.iter().any(|h| h == c) { format!("d.{c}") } else { "NULL".into() };
+            let sql = format!(
+                "SELECT {salt}, {iter}, {wrapped}, COALESCE({div}, {oiv}), COALESCE({dtag}, {otag}), d.ZDATA
+                 FROM {OBJECTS} n LEFT JOIN ZICNOTEDATA d ON d.ZNOTE = n.Z_PK WHERE n.Z_PK = ?1",
+                salt = o("ZCRYPTOSALT"),
+                iter = o("ZCRYPTOITERATIONCOUNT"),
+                wrapped = o("ZCRYPTOWRAPPEDKEY"),
+                div = d("ZCRYPTOINITIALIZATIONVECTOR"),
+                oiv = o("ZCRYPTOINITIALIZATIONVECTOR"),
+                dtag = d("ZCRYPTOTAG"),
+                otag = o("ZCRYPTOTAG"),
+            );
+            type Blob = Option<Vec<u8>>;
+            let (salt, iterations, wrapped, iv, tag, data): (Blob, Option<i64>, Blob, Blob, Blob, Blob) = conn
+                .query_row(&sql, [pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+                .map_err(sql_err)?;
+            let missing = || ApiError::unsupported("This note's encryption isn't readable here (it may be locked with your device passcode). Open it on your iPhone or Mac.");
+            let (Some(salt), Some(iterations), Some(wrapped), Some(iv), Some(tag), Some(data)) = (salt, iterations, wrapped, iv, tag, data) else {
+                return Err(missing());
+            };
+            let locked = crate::notecrypt::Locked { salt: &salt, iterations: iterations.clamp(1, 10_000_000) as u32, wrapped_key: &wrapped, iv: &iv, tag: &tag, data: &data };
+            let plain = crate::notecrypt::decrypt(&locked, password).map_err(|e| match e {
+                crate::notecrypt::UnlockError::WrongPassword => ApiError::new(
+                    ErrorCode::PermissionDenied,
+                    "Wrong password. (Notes locked with your iPhone or Mac passcode can't be opened here.)",
+                ),
+                crate::notecrypt::UnlockError::Corrupt => missing(),
+            })?;
+            let body = decode_body(&plain).ok_or_else(missing)?;
+            Ok(Response::Note(Note { summary, body }))
+        })
+    }
+
+    pub fn delete(id: &str) -> Result<Response, ApiError> {
+        util::osascript(
+            r#"on run argv
+                tell application "Notes" to delete note id (item 1 of argv)
+            end run"#,
+            &[id],
+        )?;
+        Ok(Response::Ok)
+    }
+
     pub fn create(folder_id: Option<&str>, body: &str) -> Result<Response, ApiError> {
         let html = text_to_html(body);
         let mut args = vec![html.as_str()];
@@ -401,6 +466,30 @@ mod tests {
         assert!(locked.summary.locked && !list[0].locked);
         assert!(notes.ensure_unlocked(&list[0].id).is_ok());
         assert_eq!(notes.ensure_unlocked(&list[1].id).unwrap_err().code, ErrorCode::PermissionDenied);
+
+        // Encrypt a body for the locked note the way Notes does, then unlock it.
+        let (wrapped, iv, tag, data) = crate::notecrypt::encrypt_for_test("pw", b"0123456789abcdef", 2000, &note_blob("Secret\nthe code is 1234"));
+        let conn = Connection::open(&notes.db_path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE ZICCLOUDSYNCINGOBJECT ADD COLUMN ZCRYPTOSALT BLOB;
+             ALTER TABLE ZICCLOUDSYNCINGOBJECT ADD COLUMN ZCRYPTOITERATIONCOUNT INTEGER;
+             ALTER TABLE ZICCLOUDSYNCINGOBJECT ADD COLUMN ZCRYPTOWRAPPEDKEY BLOB;
+             ALTER TABLE ZICNOTEDATA ADD COLUMN ZCRYPTOINITIALIZATIONVECTOR BLOB;
+             ALTER TABLE ZICNOTEDATA ADD COLUMN ZCRYPTOTAG BLOB;",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE ZICCLOUDSYNCINGOBJECT SET ZCRYPTOSALT = ?1, ZCRYPTOITERATIONCOUNT = 2000, ZCRYPTOWRAPPEDKEY = ?2 WHERE Z_PK = 12",
+            rusqlite::params![b"0123456789abcdef".to_vec(), wrapped],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO ZICNOTEDATA (ZNOTE, ZDATA, ZCRYPTOINITIALIZATIONVECTOR, ZCRYPTOTAG) VALUES (12, ?1, ?2, ?3)", rusqlite::params![data, iv, tag])
+            .unwrap();
+        drop(conn);
+        let notes = Notes::new(notes.db_path.clone()); // fresh connection sees the new columns
+        let Response::Note(open) = notes.unlock(&list[1].id, "pw").unwrap() else { panic!() };
+        assert_eq!(open.body, "Secret\nthe code is 1234");
+        assert_eq!(notes.unlock(&list[1].id, "nope").unwrap_err().code, ErrorCode::PermissionDenied);
         let _ = std::fs::remove_dir_all(dir);
     }
 

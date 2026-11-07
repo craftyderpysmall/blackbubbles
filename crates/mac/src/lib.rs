@@ -8,6 +8,7 @@ pub mod contacts;
 pub mod findmy;
 pub mod messages;
 pub mod notes;
+mod notecrypt;
 mod typedstream;
 mod util;
 pub mod voicememos;
@@ -106,6 +107,8 @@ impl Backend for MacBackend {
                 notes::Notes::update(&id, &body)
             }
             Request::ListVoiceMemos => self.voice_memos.list(),
+            Request::UnlockNote { id, password } => self.notes.unlock(&id, &password),
+            Request::DeleteNote { id } => notes::Notes::delete(&id),
             Request::ListContacts => self.contacts.names(&self.messages.handles()?),
             Request::ListFindMyDevices => self.findmy.list(),
             Request::RegisterBeacon { id, name, private_keys } => self.findmy.register_beacon(&id, &name, &private_keys),

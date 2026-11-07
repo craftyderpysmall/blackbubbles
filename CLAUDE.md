@@ -81,7 +81,7 @@ Not exercised yet in the Tauri UI:
 ## Layout
 
 ```
-crates/proto     wire protocol: postcard frames, Backend trait (PROTOCOL_VERSION = 4; ListContacts added)
+crates/proto     wire protocol: postcard frames, Backend trait (PROTOCOL_VERSION = 5: ListContacts, UnlockNote, DeleteNote)
 crates/net       self-signed TLS + SHA-256 pinning, pairing URIs, framed WebSocket
 crates/server    bbd: pairing/devices, sessions, --mock backend (runs anywhere)
 crates/mac       macOS data: chat.db, NoteStore.sqlite, Voice Memos, EventKit, PhotoKit, AOSKit, Find My aggregation
@@ -162,7 +162,7 @@ Screens:
   - Save As…: `save_blob_as` opens a native dialog (tauri-plugin-dialog, Rust side, so no JS permission). Attachments have a right-click menu (Open, Save As…). The web view's own image menu is suppressed, because its "Save Image As…" can't save bb:// images.
   - Text selection app-wide is white with black text; inside white surfaces (your iMessage bubbles, `.bb-inverted`) it flips to black with white text.
 - **Photos:** album pills, lazy thumbnails with an LRU cache, video and favourite badges, lightbox with arrow keys and Save.
-- **Notes:** folder chips, search, plain-text editor (first line is the title), Ctrl/⌘+S, "Edited/Saved" badge, New note. Locked (password-protected) notes show a lock and a read-only panel; their bodies are encrypted with the owner's Notes password, so `bbd` never decrypts them and refuses `UpdateNote` on them (`NoteSummary.locked`).
+- **Notes:** folder chips, search, plain-text editor (first line is the title), Ctrl/⌘+S, "Edited/Saved" badge, New note. Locked notes show a lock, and opening one asks for the Notes password: `UnlockNote` decrypts it read-only (`crates/mac/src/notecrypt.rs`: PBKDF2-SHA256 → RFC 3394 unwrap → AES-128-GCM with 16-byte IV). The password is never stored. Notes locked with the device passcode can't be opened (keychain-held key). `bbd` still refuses `UpdateNote` on locked notes. Right-click a note → Delete (with a confirm dialog) moves it to Recently Deleted via AppleScript. The mock's locked note ("Diary") opens with the password 1234.
 - **Calendar:** month grid with today as a pill, day agenda, delete. Reminders with a due date show on their day as hollow rings (events are dots) and in the agenda with a checkbox. The "New" dialog switches between Event (title, location, notes, all day, times, calendar) and Reminder (title, notes, date, optional time, list, priority).
 - **Reminders:** Today (includes overdue) / Scheduled (grouped by day) / All (grouped by list) / Completed tiles with counts, the owner's lists with colours, quick add (title + optional date/time), tick off (stays visible ~1 s), delete, "Show completed". Completed history is only fetched when shown. Timed reminders get an EventKit alarm so they also alert on the iPhone.
 - **Voice Memos:** search, play, seek, save; the player card's primary is play/pause.

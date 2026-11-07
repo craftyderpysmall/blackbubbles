@@ -390,6 +390,23 @@ impl Backend for MockBackend {
                 self.emit_later(Event::NotesChanged);
                 Response::Ok
             }
+            Request::UnlockNote { id, password } => {
+                let n = state.notes.iter().find(|n| n.summary.id == id).ok_or_else(|| ApiError::not_found("note"))?;
+                if !n.summary.locked {
+                    return Ok(Response::Note(n.clone()));
+                }
+                if password != "1234" {
+                    return Err(ApiError::new(ErrorCode::PermissionDenied, "Wrong password. (The mock's password is 1234.)"));
+                }
+                let mut open = n.clone();
+                open.body = format!("{}\nDear diary, the mock password is 1234 🔓", n.summary.title);
+                Response::Note(open)
+            }
+            Request::DeleteNote { id } => {
+                state.notes.retain(|n| n.summary.id != id);
+                self.emit_later(Event::NotesChanged);
+                Response::Ok
+            }
             Request::ListContacts => Response::Contacts(vec![ContactName { handle: "+15551230003".into(), name: "Taylor Kim".into() }]),
             Request::ListVoiceMemos => Response::VoiceMemos(
                 (1..=3)
