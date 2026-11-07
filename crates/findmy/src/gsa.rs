@@ -187,7 +187,10 @@ fn trusted_device_2fa(
         }
         Ok(builder.send()?)
     };
-    request("https://gsa.apple.com/auth/verify/trusteddevice", None)?;
+    let push = request("https://gsa.apple.com/auth/verify/trusteddevice", None)?;
+    if !push.status().is_success() {
+        eprintln!("warning: Apple didn't push a code ({}); generate one on a device instead.", push.status());
+    }
     let code = code_prompt()?;
     let reply = request("https://gsa.apple.com/grandslam/GsService2/validate", Some(code.trim()))?;
     if !reply.status().is_success() {

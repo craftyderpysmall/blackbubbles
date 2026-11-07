@@ -161,11 +161,41 @@ impl Session {
         }
     }
 
-    fn verify_code(&mut self, code: &str) -> Result<()> {
+    /// Ask Apple for the 2FA state. This is what makes it push a code to trusted devices;
+    /// the reply also lists the trusted phone numbers for the SMS fallback.
+    fn request_push(&mut self) -> Result<Vec<TrustedPhone>> {
+        let reply = self.auth_request(self.http.get(AUTH)).send().context("asking Apple to send the code")?;
+        self.absorb_headers(&reply);
+        let status = reply.status();
+        let body: Value = reply.json().unwrap_or(Value::Null);
+        if !status.is_success() {
+            bail!("Apple didn't send a code (HTTP {status}): {body}");
+        }
+        Ok(trusted_phones(&body))
+    }
+
+    fn send_sms(&mut self, phone: &TrustedPhone) -> Result<()> {
         let reply = self
-            .auth_request(self.http.post(format!("{AUTH}/verify/trusteddevice/securitycode")))
-            .json(&json!({ "securityCode": { "code": code.trim() } }))
+            .auth_request(self.http.put(format!("{AUTH}/verify/phone")))
+            .json(&json!({ "phoneNumber": { "id": phone.id }, "mode": "sms" }))
             .send()?;
+        self.absorb_headers(&reply);
+        if !reply.status().is_success() {
+            bail!("Apple couldn't send the text ({})", reply.status());
+        }
+        Ok(())
+    }
+
+    fn verify_code(&mut self, code: &str, sms: Option<&TrustedPhone>) -> Result<()> {
+        let request = match sms {
+            None => self
+                .auth_request(self.http.post(format!("{AUTH}/verify/trusteddevice/securitycode")))
+                .json(&json!({ "securityCode": { "code": code.trim() } })),
+            Some(phone) => self
+                .auth_request(self.http.post(format!("{AUTH}/verify/phone/securitycode")))
+                .json(&json!({ "securityCode": { "code": code.trim() }, "phoneNumber": { "id": phone.id }, "mode": "sms" })),
+        };
+        let reply = request.send()?;
         self.absorb_headers(&reply);
         if !reply.status().is_success() {
             bail!("2FA code was rejected ({})", reply.status());
@@ -255,19 +285,63 @@ pub(crate) fn parse_devices(data: &Value) -> Vec<Device> {
         .collect()
 }
 
-/// Sign in, asking `code_prompt` for the 2FA code if needed, and save the session.
-pub fn interactive_login(
-    dir: &Path,
-    apple_id: &str,
-    password: &str,
-    code_prompt: impl FnOnce() -> Result<String>,
-) -> Result<()> {
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrustedPhone {
+    pub id: i64,
+    /// Masked by Apple, e.g. "+1 (•••) •••-••12".
+    pub number: String,
+}
+
+fn trusted_phones(auth: &Value) -> Vec<TrustedPhone> {
+    auth.get("trustedPhoneNumbers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            Some(TrustedPhone {
+                id: p.get("id")?.as_i64()?,
+                number: p.get("numberWithDialCode").or_else(|| p.get("obfuscatedNumber")).and_then(Value::as_str).unwrap_or("your phone").to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Sign in, asking `ask` for the 2FA code if needed, and save the session.
+///
+/// `ask(prompt)` reads one line. Answering `sms` texts the code to the first trusted phone
+/// number instead of waiting for the device pop-up.
+pub fn interactive_login(dir: &Path, apple_id: &str, password: &str, mut ask: impl FnMut(&str) -> Result<String>) -> Result<()> {
     let mut session = Session::open(dir)?;
     if session.sign_in(apple_id, password)? {
-        // Asking for the auth state makes Apple push the code to trusted devices.
-        let _ = session.auth_request(session.http.get(AUTH)).send();
-        let code = code_prompt()?;
-        session.verify_code(&code)?;
+        let phones = match session.request_push() {
+            Ok(phones) => phones,
+            Err(err) => {
+                eprintln!("warning: {err:#}");
+                vec![]
+            }
+        };
+        let mut sms: Option<TrustedPhone> = None;
+        loop {
+            let hint = if phones.is_empty() || sms.is_some() { "" } else { ", or type sms to get it by text" };
+            let prompt = match &sms {
+                Some(p) => format!("Enter the 6-digit code texted to {}: ", p.number),
+                None => format!("Enter the 6-digit code from your Apple device{hint}: "),
+            };
+            let answer = ask(&prompt)?;
+            if answer.trim().eq_ignore_ascii_case("sms") && sms.is_none() {
+                let Some(phone) = phones.first().cloned() else {
+                    eprintln!("Apple didn't list a trusted phone number for this account.");
+                    continue;
+                };
+                session.send_sms(&phone)?;
+                sms = Some(phone);
+                continue;
+            }
+            match session.verify_code(&answer, sms.as_ref()) {
+                Ok(()) => break,
+                Err(err) => eprintln!("{err:#}; try again."),
+            }
+        }
     }
     session.account_login()
 }
@@ -275,6 +349,21 @@ pub fn interactive_login(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_trusted_phones() {
+        let auth = json!({ "trustedPhoneNumbers": [
+            { "id": 1, "numberWithDialCode": "+1 (•••) •••-••12", "pushMode": "sms" },
+            { "id": 2, "obfuscatedNumber": "(•••) •••-••34" },
+            { "numberWithDialCode": "no id" }
+        ]});
+        let phones = trusted_phones(&auth);
+        assert_eq!(phones, vec![
+            TrustedPhone { id: 1, number: "+1 (•••) •••-••12".into() },
+            TrustedPhone { id: 2, number: "(•••) •••-••34".into() },
+        ]);
+        assert!(trusted_phones(&json!({})).is_empty());
+    }
 
     #[test]
     fn parses_refresh_client_reply() {

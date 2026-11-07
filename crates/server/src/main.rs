@@ -126,17 +126,17 @@ fn main() -> Result<()> {
         Command::FindmyLogin { apple_id, beacons, anisette_url } => {
             let password = rpassword_prompt("Apple ID password: ")?;
             let icloud_dir = dir.join("icloud");
-            bb_findmy::icloud::interactive_login(&icloud_dir, &apple_id, &password, || {
-                rpassword_prompt("Enter the 6-digit code shown on your Apple device: ")
-            })?;
+            eprintln!("{CODE_HELP}");
+            bb_findmy::icloud::interactive_login(&icloud_dir, &apple_id, &password, ask)?;
             println!("Signed in to iCloud. Your Apple devices will now appear in Find My.");
             if beacons {
                 if let Some(url) = &anisette_url {
                     std::fs::write(dir.join("anisette_url"), url)?;
                 }
                 let provider = anisette_provider(&dir)?;
+                eprintln!("\nSigning in a second time for Offline Finding (locating this PC's beacon). This needs a new code.");
                 let auth = bb_findmy::gsa::login(&*provider, &apple_id, &password, || {
-                    rpassword_prompt("Enter the new 6-digit code for the beacon sign-in: ")
+                    ask("Enter the new 6-digit code from your Apple device: ")
                 })?;
                 bb_net::write_private(&icloud_dir.join("searchparty.json"), &serde_json::to_vec_pretty(&auth)?)?;
                 println!("Signed in to Offline Finding. Registered beacons will now be located.");
@@ -157,6 +157,22 @@ fn main() -> Result<()> {
 }
 
 /// Read a line without echoing it when stdin is a terminal.
+const CODE_HELP: &str = "\
+If Apple asks for a code and no pop-up appears on your devices, make one yourself:
+  iPhone/iPad: Settings → your name → Sign-In & Security → Two-Factor Authentication → Get Verification Code
+  Mac:         System Settings → your name → Sign-In & Security → Two-Factor Authentication → Get Verification Code
+";
+
+/// Read one visible line (for 2FA codes).
+fn ask(prompt: &str) -> Result<String> {
+    use std::io::{BufRead, Write};
+    eprint!("{prompt}");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(line.trim().to_string())
+}
+
 fn rpassword_prompt(prompt: &str) -> Result<String> {
     use std::io::{BufRead, Write};
     eprint!("{prompt}");
