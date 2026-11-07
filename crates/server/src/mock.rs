@@ -46,7 +46,8 @@ impl MockBackend {
         let people = [
             ("iMessage;-;+15551230001", "Alex", Service::IMessage),
             ("iMessage;-;sam@example.com", "Sam", Service::IMessage),
-            ("SMS;-;+15551230003", "Taylor", Service::Sms),
+            // Shown by number in chat.db; the name comes from Contacts.
+            ("SMS;-;+15551230003", "+15551230003", Service::Sms),
             ("SMS;-;55512", "55512", Service::Sms),
         ];
         let mut messages = Vec::new();
@@ -81,7 +82,7 @@ impl MockBackend {
             }
             chats.push(Chat {
                 guid: guid.to_string(),
-                display_name: Some(name.to_string()),
+                display_name: (!name.starts_with('+')).then(|| name.to_string()),
                 participants: vec![name.to_string()],
                 service: *service,
                 last_message: None,
@@ -389,6 +390,7 @@ impl Backend for MockBackend {
                 self.emit_later(Event::NotesChanged);
                 Response::Ok
             }
+            Request::ListContacts => Response::Contacts(vec![ContactName { handle: "+15551230003".into(), name: "Taylor Kim".into() }]),
             Request::ListVoiceMemos => Response::VoiceMemos(
                 (1..=3)
                     .map(|i| VoiceMemo {

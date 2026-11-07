@@ -152,9 +152,14 @@ impl Notifier {
 
     async fn lookup_chat(&self, guid: &str) -> Option<String> {
         let Ok(Response::Chats(chats)) = self.client.request(Request::ListChats { limit: 500, before: None }).await else { return None };
+        let contacts: HashMap<String, String> = match self.client.request(Request::ListContacts).await {
+            Ok(Response::Contacts(list)) => list.into_iter().map(|c| (c.handle, c.name)).collect(),
+            _ => HashMap::new(),
+        };
         let mut names = self.chat_names.lock().unwrap();
         for chat in chats {
-            let name = chat.display_name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| chat.participants.join(", "));
+            let people: Vec<&str> = chat.participants.iter().map(|h| contacts.get(h).map_or(h.as_str(), String::as_str)).collect();
+            let name = chat.display_name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| people.join(", "));
             names.insert(chat.guid, name);
         }
         names.get(guid).cloned()

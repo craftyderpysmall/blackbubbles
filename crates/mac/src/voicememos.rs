@@ -29,15 +29,31 @@ impl VoiceMemos {
     /// The recordings folder differs between macOS versions.
     pub fn default_dir() -> PathBuf {
         let home = util::home();
-        let candidates = [
+        let mut candidates = vec![
             home.join("Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"),
             home.join("Library/Application Support/com.apple.voicememos/Recordings"),
         ];
+        // Other group-container names Apple has used or may use.
+        if let Ok(entries) = std::fs::read_dir(home.join("Library/Group Containers")) {
+            candidates.extend(
+                entries
+                    .flatten()
+                    .filter(|e| e.file_name().to_string_lossy().to_lowercase().contains("voicememos"))
+                    .map(|e| e.path().join("Recordings")),
+            );
+        }
         candidates.iter().find(|p| p.join("CloudRecordings.db").exists()).unwrap_or(&candidates[0]).clone()
     }
 
     fn rows(&self) -> Result<Vec<Row>, ApiError> {
-        let conn: Connection = util::open_readonly(&self.dir.join("CloudRecordings.db"))?;
+        let db = self.dir.join("CloudRecordings.db");
+        if !db.exists() {
+            return Err(ApiError::new(
+                bb_proto::ErrorCode::NotFound,
+                "No Voice Memos library on this Mac yet. Open the Voice Memos app on the Mac once (with Voice Memos on in iCloud settings) so it downloads your recordings.",
+            ));
+        }
+        let (conn, _snapshot): (Connection, bool) = util::open_readonly(&db)?;
         let cols = columns(&conn, "ZCLOUDRECORDING");
         let has = |c: &str| cols.iter().any(|have| have == c);
         let title_expr = ["ZCUSTOMLABELFORSORTING", "ZCUSTOMLABEL", "ZENCRYPTEDTITLE"]

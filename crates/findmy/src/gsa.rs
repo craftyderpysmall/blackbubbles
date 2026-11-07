@@ -198,11 +198,17 @@ fn trusted_device_2fa(
         };
         let answer = code_prompt(&prompt)?;
         if answer.trim().eq_ignore_ascii_case("sms") && sms.is_none() {
-            let auth: serde_json::Value = with_headers(client.get("https://gsa.apple.com/auth"), false).send()?.json()?;
+            // Apple numbers trusted phones from 1. The list endpoint may answer in HTML, so
+            // fall back to the first number rather than failing.
+            let auth: serde_json::Value = with_headers(client.get("https://gsa.apple.com/auth"), false)
+                .send()
+                .ok()
+                .and_then(|r| r.json().ok())
+                .unwrap_or(serde_json::Value::Null);
             let phone = auth
                 .pointer("/trustedPhoneNumbers/0")
                 .and_then(|p| Some((p.get("id")?.as_i64()?, p.get("numberWithDialCode").and_then(serde_json::Value::as_str).unwrap_or("your phone").to_string())))
-                .context("Apple didn't list a trusted phone number for this account")?;
+                .unwrap_or((1, "your trusted phone number".to_string()));
             let reply = with_headers(client.put("https://gsa.apple.com/auth/verify/phone/"), false)
                 .json(&serde_json::json!({ "phoneNumber": { "id": phone.0 }, "mode": "sms" }))
                 .send()?;

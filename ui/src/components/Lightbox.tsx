@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
-import { blobUrl, errorText, native, type BlobKind } from "@/lib/bb";
+import { blobUrl, saveAs, type BlobKind } from "@/lib/bb";
 import { useApp } from "@/lib/app";
 import { Button, IconButton, Spinner } from "./ui";
 
@@ -41,10 +41,7 @@ export function Lightbox({
 
   const save = () => {
     setSaving(true);
-    native
-      .saveBlob(kind, id, name)
-      .then((p) => toast(`Saved to ${p}`), (e) => toast(errorText(e)))
-      .finally(() => setSaving(false));
+    void saveAs(kind, id, name, toast).finally(() => setSaving(false));
   };
 
   return createPortal(
@@ -52,7 +49,7 @@ export function Lightbox({
       <div className="flex items-center gap-2 p-4" onClick={(e) => e.stopPropagation()}>
         <div className="min-w-0 flex-1 truncate text-xs text-muted">{caption}</div>
         <Button variant="primary" icon={Download} busy={saving} onClick={save}>
-          Save
+          Save As…
         </Button>
         <IconButton icon={X} label="Close" onClick={onClose} />
       </div>

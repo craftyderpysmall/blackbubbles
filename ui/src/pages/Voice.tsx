@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { AudioLines, Download, Pause, Play, RotateCw, Square } from "lucide-react";
-import { api, errorText, native, type AudioState, type VoiceMemo } from "@/lib/bb";
+import { api, errorText, native, saveAs, type AudioState, type VoiceMemo } from "@/lib/bb";
 import { keys } from "@/lib/events";
 import { useApp } from "@/lib/app";
 import { bytes, duration, shortTime } from "@/lib/format";
@@ -126,10 +126,7 @@ function PlayerCard({ state, memo, refresh }: { state: AudioState; memo?: VoiceM
   const save = () => {
     setSaving(true);
     const name = `${(state.title || "Recording").replace(/[\\/]/g, "-")}.m4a`;
-    native
-      .saveBlob("VoiceMemo", state.id!, name)
-      .then((p) => toast(`Saved to ${p}`), (e) => toast(errorText(e)))
-      .finally(() => setSaving(false));
+    void saveAs("VoiceMemo", state.id!, name, toast).finally(() => setSaving(false));
   };
 
   return (
@@ -157,7 +154,7 @@ function PlayerCard({ state, memo, refresh }: { state: AudioState; memo?: VoiceM
             <span className="w-11 shrink-0 text-right font-mono text-[11px] text-subtle">{duration(total)}</span>
           </div>
         </div>
-        <IconButton icon={Download} label="Save to Downloads" busy={saving} onClick={save} />
+        <IconButton icon={Download} label="Save As…" busy={saving} onClick={save} />
         <IconButton icon={Square} label="Stop" onClick={() => void native.audioStop().then(refresh)} />
       </div>
     </Card>

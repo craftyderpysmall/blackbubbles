@@ -19,6 +19,12 @@ const queryClient = new QueryClient({
   },
 });
 
+// The web view's own image menu ("Save Image As…", "Copy Image Address") can't handle
+// images served over bb://. Attachments have their own menu; Save As… is in the viewer.
+document.addEventListener("contextmenu", (e) => {
+  if (e.target instanceof HTMLImageElement) e.preventDefault();
+});
+
 const root = createRoot(document.getElementById("root")!);
 
 native

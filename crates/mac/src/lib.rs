@@ -4,6 +4,7 @@
 //! on any OS with fixtures). Calendar, Reminders and Photos use EventKit and PhotoKit. Writes go
 //! through AppleScript or the frameworks, never by modifying Apple's databases.
 
+pub mod contacts;
 pub mod findmy;
 pub mod messages;
 pub mod notes;
@@ -31,6 +32,7 @@ pub(crate) fn now_ms() -> i64 {
 
 pub struct MacBackend {
     messages: Arc<messages::Messages>,
+    contacts: contacts::Contacts,
     notes: Arc<notes::Notes>,
     voice_memos: Arc<voicememos::VoiceMemos>,
     findmy: findmy::FindMy,
@@ -47,6 +49,7 @@ impl MacBackend {
         let cache = data_dir.join("cache");
         Ok(Self {
             messages: Arc::new(messages::Messages::new(messages::Messages::default_path(), cache.clone())),
+            contacts: contacts::Contacts::new(contacts::Contacts::default_root()),
             notes: Arc::new(notes::Notes::new(notes::Notes::default_path())),
             voice_memos: Arc::new(voicememos::VoiceMemos::new(voicememos::VoiceMemos::default_dir(), cache.clone())),
             findmy: findmy::FindMy::new(data_dir),
@@ -103,6 +106,7 @@ impl Backend for MacBackend {
                 notes::Notes::update(&id, &body)
             }
             Request::ListVoiceMemos => self.voice_memos.list(),
+            Request::ListContacts => self.contacts.names(&self.messages.handles()?),
             Request::ListFindMyDevices => self.findmy.list(),
             Request::RegisterBeacon { id, name, private_keys } => self.findmy.register_beacon(&id, &name, &private_keys),
             Request::GetBlob { kind: BlobKind::Attachment, id, offset, len } => self.messages.attachment_blob(&id, offset, len),

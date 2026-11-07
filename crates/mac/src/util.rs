@@ -32,9 +32,33 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     }
 }
 
-pub fn open_readonly(path: &Path) -> Result<Connection, ApiError> {
-    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
-        .map_err(|err| {
+/// Open one of Apple's SQLite stores read-only. Returns the connection and whether it is
+/// a snapshot (see below), which callers must not cache.
+///
+/// Apple's stores use WAL mode. A read-only connection can't create the `-shm` side file,
+/// so once the owning app quits (Voice Memos, Notes) and SQLite removes it, a normal
+/// read-only open fails with "unable to open database file". Then we fall back to
+/// `immutable=1`: still strictly read-only and touching nothing, but it reads the main
+/// file as it is, so it's a snapshot that must be reopened to see changes.
+pub fn open_readonly(path: &Path) -> Result<(Connection, bool), ApiError> {
+    if !path.exists() {
+        // With Full Disk Access missing, macOS hides the file entirely.
+        return Err(ApiError::new(
+            bb_proto::ErrorCode::NotFound,
+            format!("{} doesn't exist (or bbd lacks Full Disk Access to see it).", path.display()),
+        ));
+    }
+    let normal = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+        .and_then(|conn| conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(())).map(|_| conn));
+    let err = match normal {
+        Ok(conn) => return Ok((conn, false)),
+        Err(err) => err,
+    };
+    let uri = format!("file:{}?mode=ro&immutable=1", percent_path(path));
+    Connection::open_with_flags(&uri, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+        .and_then(|conn| conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(())).map(|_| conn))
+        .map(|conn| (conn, true))
+        .map_err(|_| {
             ApiError::new(
                 bb_proto::ErrorCode::PermissionDenied,
                 format!(
@@ -43,6 +67,21 @@ pub fn open_readonly(path: &Path) -> Result<Connection, ApiError> {
                 ),
             )
         })
+}
+
+/// Percent-encode a path for an SQLite `file:` URI (spaces, `?`, `#`, `%`).
+fn percent_path(path: &Path) -> String {
+    let mut out = String::new();
+    for c in path.to_string_lossy().chars() {
+        match c {
+            ' ' => out.push_str("%20"),
+            '?' => out.push_str("%3f"),
+            '#' => out.push_str("%23"),
+            '%' => out.push_str("%25"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Columns of a table, for coping with schema differences between macOS versions.
@@ -112,6 +151,32 @@ pub fn escape_html(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn opens_wal_database_without_shm() {
+        let dir = std::env::temp_dir().join(format!("bb util wal {}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("Cloud Recordings.db");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE t (x); INSERT INTO t VALUES (42);").unwrap();
+        } // closing removes -wal and -shm, like an app quitting
+        assert!(!dir.join("Cloud Recordings.db-shm").exists());
+        // Make the folder read-only so SQLite can't create -shm (as for a read-only open).
+        let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o555);
+        std::fs::set_permissions(&dir, perms).unwrap();
+        let (conn, snapshot) = super::open_readonly(&db).unwrap();
+        let x: i64 = conn.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(x, 42);
+        let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&dir, perms).unwrap();
+        assert!(snapshot, "the plain read-only open should have failed (that was the bug)");
+        assert_eq!(super::open_readonly(&dir.join("missing.db")).unwrap_err().code, bb_proto::ErrorCode::NotFound);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     #[test]

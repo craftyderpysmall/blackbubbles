@@ -195,6 +195,7 @@ fn run_gui(runtime: &tokio::runtime::Runtime, state: commands::AppState) -> Resu
     tauri::async_runtime::set(runtime.handle().clone());
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .register_asynchronous_uri_scheme_protocol("bb", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
@@ -217,6 +218,7 @@ fn run_gui(runtime: &tokio::runtime::Runtime, state: commands::AppState) -> Resu
             commands::request,
             commands::send_attachment,
             commands::save_blob,
+            commands::save_blob_as,
             commands::pair,
             commands::beacon_setup,
             commands::save_notifications,

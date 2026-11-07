@@ -58,6 +58,8 @@ pub enum Request {
     CreateReminder(NewReminder),
     SetReminderCompleted { id: String, completed: bool },
     DeleteReminder { id: String },
+    /// Contact names for every phone number / email in Messages.
+    ListContacts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -127,6 +129,14 @@ pub enum Response {
     ReminderLists(Vec<ReminderList>),
     Reminders(Vec<Reminder>),
     Reminder(Reminder),
+    Contacts(Vec<ContactName>),
+}
+
+/// A chat handle (exactly as in `Chat.participants` / `Message.sender`) and its contact name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContactName {
+    pub handle: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

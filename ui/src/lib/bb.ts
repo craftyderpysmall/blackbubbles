@@ -278,6 +278,9 @@ export const api = {
   createReminder: (reminder: NewReminder) => call<Reminder, "Reminder">({ CreateReminder: reminder }, "Reminder"),
   setReminderCompleted: (id: string, completed: boolean) => ok({ SetReminderCompleted: { id, completed } }),
   deleteReminder: (id: string) => ok({ DeleteReminder: { id } }),
+  /** handle → contact name */
+  contacts: () =>
+    call<{ handle: string; name: string }[], "Contacts">("ListContacts", "Contacts").then((list) => new Map(list.map((c) => [c.handle, c.name]))),
   voiceMemos: () => call<VoiceMemo[], "VoiceMemos">("ListVoiceMemos", "VoiceMemos"),
   albums: () => call<Album[], "Albums">("ListAlbums", "Albums"),
   assets: (album_id: string | null, offset: number, limit: number) =>
@@ -297,6 +300,8 @@ export const native = {
   gmailAdd: (address: string, appPassword: string) => invoke<ConfigView>("gmail_add", { address, appPassword }),
   gmailRemove: (address: string) => invoke<ConfigView>("gmail_remove", { address }),
   saveBlob: (kind: BlobKind, id: string, name: string) => invoke<string>("save_blob", { kind, id, name }),
+  /** Native "Save As" dialog; resolves to the saved path, or null if cancelled. */
+  saveBlobAs: (kind: BlobKind, id: string, name: string) => invoke<string | null>("save_blob_as", { kind, id, name }),
   audioPlay: (id: string, title: string, duration: number) => invoke<void>("audio_play", { id, title, duration }),
   audioToggle: () => invoke<void>("audio_toggle"),
   audioSeek: (secs: number) => invoke<void>("audio_seek", { secs }),
@@ -315,4 +320,14 @@ export function onServerEvent(fn: (event: ServerEvent) => void): Promise<Unliste
 
 export function onStatus(fn: (status: Status) => void): Promise<UnlistenFn> {
   return listen<Status>("status", (e) => fn(e.payload));
+}
+
+/** Save As… with a toast for the outcome. */
+export async function saveAs(kind: BlobKind, id: string, name: string, toast: (t: string) => void): Promise<void> {
+  try {
+    const path = await native.saveBlobAs(kind, id, name);
+    if (path) toast(`Saved to ${path}`);
+  } catch (err) {
+    toast(`Couldn't save: ${errorText(err)}`);
+  }
 }

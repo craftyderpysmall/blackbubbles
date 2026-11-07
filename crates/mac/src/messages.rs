@@ -56,7 +56,11 @@ impl Messages {
     fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> Result<T, ApiError>) -> Result<T, ApiError> {
         let mut guard = self.conn.lock().unwrap();
         if guard.is_none() {
-            *guard = Some(util::open_readonly(&self.db_path)?);
+            let (conn, snapshot) = util::open_readonly(&self.db_path)?;
+            if snapshot {
+                return f(&conn);
+            }
+            *guard = Some(conn);
         }
         f(guard.as_ref().unwrap())
     }
@@ -103,6 +107,14 @@ impl Messages {
             })
         })?
         .collect()
+    }
+
+    /// Every phone number / email Messages knows.
+    pub fn handles(&self) -> Result<Vec<String>, ApiError> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare_cached("SELECT DISTINCT id FROM handle WHERE id IS NOT NULL").map_err(sql_err)?;
+            stmt.query_map([], |r| r.get(0)).and_then(Iterator::collect).map_err(sql_err)
+        })
     }
 
     pub fn list_chats(&self, limit: u32, before: Option<Timestamp>) -> Result<Response, ApiError> {

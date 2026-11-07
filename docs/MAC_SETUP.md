@@ -68,6 +68,8 @@ This asks for your Apple ID password and then for 2FA codes. **If no code pops u
 - **Logs:** `tail -f ~/Library/Logs/bbd.log`
 - **"cannot open … chat.db":** Full Disk Access is missing, or was granted before the binary changed. Remove `bbd` from the list, add it again, then kickstart.
 - **Messages not sending:** check System Settings → Privacy & Security → Automation → bbd → Messages.
+- **Voice Memos is empty or says the library doesn't exist:** open the Voice Memos app on the Mac once (with Voice Memos turned on under your Apple ID → iCloud), so it downloads your recordings. After that, BlackBubbles can read them even while the app is closed.
+- **Contacts show as numbers:** names come from the Mac's Contacts app. Turn on Contacts under your Apple ID → iCloud on the Mac, and check that Contacts.app shows them.
 - **Find My "session expired":** run `findmy-login` again.
 - **`findmy-login` waits for a code that never arrives:** type `sms` at the prompt to get it by text (see step 5).
 - **Linux says "failed to lookup address information" for `….local`:** the Linux PC can't resolve `.local` names yet. See [LINUX_SETUP.md → Let Linux find the Mac by name](LINUX_SETUP.md#let-linux-find-the-mac-by-name).

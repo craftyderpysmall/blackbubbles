@@ -238,6 +238,34 @@ pub async fn save_blob(state: State<'_, AppState>, kind: String, id: String, nam
     crate::util::save_download(&name, &blob.0).map(|p| p.display().to_string()).map_err(|e| e.to_string())
 }
 
+/// "Save As…": ask where (starting in Downloads), then write the blob there.
+/// Returns the path, or `None` if the dialog was cancelled.
+#[tauri::command]
+pub async fn save_blob_as(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+    kind: String,
+    id: String,
+    name: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let kind = blob::parse_kind(&kind).ok_or("unknown kind")?;
+    let clean: String = name.chars().filter(|c| !c.is_control() && *c != '/' && *c != '\\').collect();
+    let mut dialog = window.dialog().file().set_parent(&window).set_title("Save As").set_file_name(if clean.trim().is_empty() { "download" } else { &clean });
+    if let Some(dir) = directories::UserDirs::new().and_then(|d| d.download_dir().map(|p| p.to_path_buf())) {
+        dialog = dialog.set_directory(dir);
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    dialog.save_file(move |path| {
+        let _ = tx.send(path);
+    });
+    let Some(path) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    let blob = state.blobs.get(&state.client(), kind, &id).await?;
+    tokio::fs::write(&path, &blob.0).await.map_err(|e| format!("couldn't write {}: {e}", path.display()))?;
+    Ok(Some(path.display().to_string()))
+}
+
 #[tauri::command]
 pub async fn pair(app: AppHandle, state: State<'_, AppState>, uri: String, name: String) -> Result<ConfigView, String> {
     let server = conn::pair(uri.trim(), name.trim()).await.map_err(|e| format!("{e:#}"))?;

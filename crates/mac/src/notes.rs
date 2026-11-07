@@ -146,8 +146,12 @@ impl Notes {
     fn with_conn<T>(&self, f: impl FnOnce(&Connection, &Schema) -> Result<T, ApiError>) -> Result<T, ApiError> {
         let mut guard = self.conn.lock().unwrap();
         if guard.is_none() {
-            let conn = util::open_readonly(&self.db_path)?;
+            let (conn, snapshot) = util::open_readonly(&self.db_path)?;
             let schema = Schema::load(&conn)?;
+            if snapshot {
+                // Notes isn't running; a snapshot must not be cached (it wouldn't see edits).
+                return f(&conn, &schema);
+            }
             *guard = Some((conn, schema));
         }
         let (conn, schema) = guard.as_ref().unwrap();

@@ -35,6 +35,7 @@ reqwest.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "=2.8.3"
 percent-encoding = "2"
 rodio = { version = "0.23", default-features = false, features = ["playback", "symphonia-aac", "symphonia-isomp4", "symphonia-alac", "wav"] }
 

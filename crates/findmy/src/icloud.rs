@@ -173,7 +173,12 @@ impl Session {
             bail!("Apple didn't send a code (HTTP {status}): {body}");
         }
         let no_devices = body.get("noTrustedDevices").and_then(Value::as_bool).unwrap_or(false);
-        Ok((trusted_phones(&body), no_devices))
+        let phones = trusted_phones(&body);
+        if phones.is_empty() {
+            let keys: Vec<&str> = body.as_object().map(|o| o.keys().map(String::as_str).collect()).unwrap_or_default();
+            eprintln!("note: Apple's reply listed no phone numbers (fields: {keys:?}); `sms` will use your first trusted number.");
+        }
+        Ok((phones, no_devices))
     }
 
     fn send_sms(&mut self, phone: &TrustedPhone) -> Result<()> {
@@ -323,7 +328,8 @@ pub fn interactive_login(dir: &Path, apple_id: &str, password: &str, mut ask: im
             }
         };
         let mut sms: Option<TrustedPhone> = None;
-        if no_devices && let Some(phone) = phones.first().cloned() {
+        if no_devices {
+            let phone = phones.first().cloned().unwrap_or(TrustedPhone { id: 1, number: "your trusted phone number".into() });
             eprintln!("Apple says no device can show a code for this account, so it's being texted instead.");
             session.send_sms(&phone)?;
             sms = Some(phone);
@@ -336,10 +342,8 @@ pub fn interactive_login(dir: &Path, apple_id: &str, password: &str, mut ask: im
             };
             let answer = ask(&prompt)?;
             if answer.trim().eq_ignore_ascii_case("sms") && sms.is_none() {
-                let Some(phone) = phones.first().cloned() else {
-                    eprintln!("Apple didn't list a trusted phone number for this account.");
-                    continue;
-                };
+                // Apple numbers trusted phones from 1; use the first if the list didn't parse.
+                let phone = phones.first().cloned().unwrap_or(TrustedPhone { id: 1, number: "your trusted phone number".into() });
                 session.send_sms(&phone)?;
                 sms = Some(phone);
                 continue;

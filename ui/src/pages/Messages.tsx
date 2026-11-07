@@ -1,12 +1,14 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowLeft, ArrowUp, Bell, BellOff, Download, File as FileIcon, Mail, MessageCircle, Paperclip, Phone, RotateCw, Upload } from "lucide-react";
-import { api, blobUrl, errorText, native, type Attachment, type Chat } from "@/lib/bb";
+import { ArrowLeft, ArrowUp, Bell, BellOff, Download, Maximize2, File as FileIcon, Mail, MessageCircle, Paperclip, Phone, RotateCw, Upload } from "lucide-react";
+import { api, blobUrl, errorText, native, saveAs, type Attachment, type Chat } from "@/lib/bb";
+import { ContextMenu as CM } from "radix-ui";
 import { addToThread, keys, type LocalMessage, type ThreadData } from "@/lib/events";
 import { NARROW_BELOW, useApp, useWidth } from "@/lib/app";
 import { bytes, dayLabel, groupEventText, sameDay, shortTime, time } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { useNames, type NameOf } from "@/lib/contacts";
 import { Avatar, Badge, Button, Card, Center, EmptyState, IconButton, SearchInput, Spinner, Textarea } from "@/components/ui";
 import { Linkified } from "@/components/Linkified";
 import { Lightbox } from "@/components/Lightbox";
@@ -14,7 +16,8 @@ import { Lightbox } from "@/components/Lightbox";
 const PAGE = 60;
 const ROW = 64;
 
-export const chatTitle = (chat: Chat) => (chat.display_name?.trim() ? chat.display_name : chat.participants.join(", ")) || "Unknown";
+export const chatTitle = (chat: Chat, name: NameOf = (h) => h) =>
+  (chat.display_name?.trim() ? chat.display_name : chat.participants.map(name).join(", ")) || "Unknown";
 
 const isSms = (chat: Chat) => chat.service !== "IMessage";
 
@@ -60,12 +63,13 @@ export function MessagesPage() {
 
 function ChatList({ chats, loading, error, selected, onSelect }: { chats?: Chat[]; loading: boolean; error: unknown; selected: string | null; onSelect: (g: string) => void }) {
   const [filter, setFilter] = useState("");
+  const name = useNames();
   const scroller = useRef<HTMLDivElement>(null);
   const shown = useMemo(() => {
     const q = filter.trim().toLowerCase();
     if (!chats || !q) return chats ?? [];
-    return chats.filter((c) => chatTitle(c).toLowerCase().includes(q) || c.participants.some((p) => p.toLowerCase().includes(q)) || c.last_message?.text?.toLowerCase().includes(q));
-  }, [chats, filter]);
+    return chats.filter((c) => chatTitle(c, name).toLowerCase().includes(q) || c.participants.some((p) => p.toLowerCase().includes(q)) || c.last_message?.text?.toLowerCase().includes(q));
+  }, [chats, filter, name]);
   const virtual = useVirtualizer({ count: shown.length, getScrollElement: () => scroller.current, estimateSize: () => ROW, overscan: 8 });
 
   return (
@@ -90,7 +94,7 @@ function ChatList({ chats, loading, error, selected, onSelect }: { chats?: Chat[
               const chat = shown[row.index];
               return (
                 <div key={chat.guid} style={{ position: "absolute", top: 0, left: 0, right: 0, height: row.size, transform: `translateY(${row.start}px)` }}>
-                  <ChatRow chat={chat} active={chat.guid === selected} onSelect={onSelect} />
+                  <ChatRow chat={chat} name={name} active={chat.guid === selected} onSelect={onSelect} />
                 </div>
               );
             })}
@@ -101,19 +105,19 @@ function ChatList({ chats, loading, error, selected, onSelect }: { chats?: Chat[
   );
 }
 
-const ChatRow = memo(function ChatRow({ chat, active, onSelect }: { chat: Chat; active: boolean; onSelect: (g: string) => void }) {
+const ChatRow = memo(function ChatRow({ chat, name, active, onSelect }: { chat: Chat; name: NameOf; active: boolean; onSelect: (g: string) => void }) {
   const last = chat.last_message;
-  const event = last && groupEventText(last);
+  const event = last && groupEventText(last, name);
   const preview = last ? (event ?? (last.text?.trim() || (last.attachments.length ? "Attachment" : ""))) : "";
   return (
     <button
       onClick={() => onSelect(chat.guid)}
       className={cn("flex h-[60px] w-full items-center gap-3 rounded-control px-2.5 text-left transition-colors duration-150", active ? "bg-border" : "hover:bg-raised")}
     >
-      <Avatar name={chatTitle(chat)} size={38} />
+      <Avatar name={chatTitle(chat, name)} size={38} />
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-2">
-          <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-fg">{chatTitle(chat)}</span>
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-fg">{chatTitle(chat, name)}</span>
           {last && <span className="shrink-0 text-[11px] text-subtle">{shortTime(last.date)}</span>}
         </span>
         <span className="flex items-center gap-1.5">
@@ -134,6 +138,9 @@ let localId = 0;
 
 function Thread({ chat, onBack }: { chat: Chat; onBack?: () => void }) {
   const { toast, config, setConfig } = useApp();
+  const name = useNames();
+  const title = chatTitle(chat, name);
+  const people = chat.participants.map(name).join(", ");
   const qc = useQueryClient();
   const scroller = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState("");
@@ -159,7 +166,7 @@ function Thread({ chat, onBack }: { chat: Chat; onBack?: () => void }) {
       const prev = messages[i - 1]?.group_event ? undefined : messages[i - 1];
       const next = messages[i + 1]?.group_event ? undefined : messages[i + 1];
       if (!messages[i - 1] || !sameDay(new Date(messages[i - 1].date), new Date(m.date))) out.push({ kind: "day", key: `d${m.date}-${m.guid}`, label: dayLabel(m.date) });
-      const event = groupEventText(m);
+      const event = groupEventText(m, name);
       if (event) {
         out.push({ kind: "event", key: m.guid, text: event, date: m.date });
         return;
@@ -169,7 +176,7 @@ function Thread({ chat, onBack }: { chat: Chat; onBack?: () => void }) {
       out.push({ kind: "msg", key: m.guid, m, sender, tail });
     });
     return out;
-  }, [thread.data, group]);
+  }, [thread.data, group, name]);
 
   const virtual = useVirtualizer({
     count: rows.length,
@@ -253,10 +260,13 @@ function Thread({ chat, onBack }: { chat: Chat; onBack?: () => void }) {
     >
       <div className="flex min-h-14 items-center gap-3 border-b border-border px-3 py-2">
         {onBack && <IconButton icon={ArrowLeft} label="Back" onClick={onBack} />}
-        <Avatar name={chatTitle(chat)} size={34} />
+        <Avatar name={title} size={34} />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[14px] font-semibold text-fg">{chatTitle(chat)}</div>
-          {chat.participants.join(", ") !== chatTitle(chat) && <div className="truncate text-xs text-subtle">{chat.participants.join(", ")}</div>}
+          <div className="truncate text-[14px] font-semibold text-fg">{title}</div>
+          {/* The numbers behind the names, or the people in a named group. */}
+          {(people !== title || people !== chat.participants.join(", ")) && (
+            <div className="selectable truncate text-xs text-subtle">{people !== title ? people : chat.participants.join(", ")}</div>
+          )}
         </div>
         <div className="hidden items-center gap-1.5 sm:flex">
           <Badge>{chat.service === "IMessage" ? "iMessage" : chat.service === "Sms" ? "SMS" : "RCS"}</Badge>
@@ -301,7 +311,7 @@ function Thread({ chat, onBack }: { chat: Chat; onBack?: () => void }) {
                     ) : row.kind === "event" ? (
                       <div title={time(row.date)} className="selectable px-6 py-2 text-center text-[11.5px] text-subtle">{row.text}</div>
                     ) : (
-                      <Bubble m={row.m} sms={isSms(chat)} sender={row.sender} tail={row.tail} onView={setViewing} />
+                      <Bubble m={row.m} sms={isSms(chat)} sender={row.sender && name(row.sender)} tail={row.tail} onView={setViewing} />
                     )}
                   </div>
                 );
@@ -323,7 +333,7 @@ function Thread({ chat, onBack }: { chat: Chat; onBack?: () => void }) {
         <div className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-card border border-dashed border-border-strong bg-bg/80 animate-fade">
           <div className="flex flex-col items-center gap-2 text-fg">
             <Upload className="size-6" />
-            <span className="text-sm font-medium">Drop to send to {chatTitle(chat)}</span>
+            <span className="text-sm font-medium">Drop to send to {title}</span>
           </div>
         </div>
       )}
@@ -383,22 +393,47 @@ const Bubble = memo(function Bubble({ m, sms, sender, tail, onView }: { m: Local
   );
 });
 
+/** Right-click menu for an attachment. Replaces the web view's own menu, whose "Save Image
+ *  As…" can't save images served by the app. */
+function AttachmentMenu({ a, onOpen, children }: { a: Attachment; onOpen?: () => void; children: React.ReactNode }) {
+  const { toast } = useApp();
+  const item = "flex h-8 cursor-default items-center gap-2 rounded-[8px] px-2.5 text-[13px] text-fg outline-none data-[highlighted]:bg-raised [&_svg]:size-4 [&_svg]:text-muted";
+  return (
+    <CM.Root>
+      <CM.Trigger asChild>{children}</CM.Trigger>
+      <CM.Portal>
+        <CM.Content className="z-50 min-w-44 rounded-control border border-border bg-surface p-1 shadow-soft animate-pop">
+          {onOpen && (
+            <CM.Item className={item} onSelect={onOpen}>
+              <Maximize2 /> Open
+            </CM.Item>
+          )}
+          <CM.Item className={item} onSelect={() => void saveAs("Attachment", a.guid, a.file_name ?? "attachment", toast)}>
+            <Download /> Save As…
+          </CM.Item>
+        </CM.Content>
+      </CM.Portal>
+    </CM.Root>
+  );
+}
+
 function AttachmentView({ a, mine, onView }: { a: Attachment; mine: boolean; onView: (a: Attachment) => void }) {
   const { toast } = useApp();
   const [failed, setFailed] = useState(false);
   const image = a.mime_type?.startsWith("image/") && !failed;
-  const save = useCallback(() => {
-    native.saveBlob("Attachment", a.guid, a.file_name ?? "attachment").then((p) => toast(`Saved to ${p}`), (e) => toast(errorText(e)));
-  }, [a, toast]);
+  const save = useCallback(() => void saveAs("Attachment", a.guid, a.file_name ?? "attachment", toast), [a, toast]);
   if (image) {
     return (
-      <button onClick={() => onView(a)} className="mb-0.5 overflow-hidden rounded-[18px] border border-border bg-raised">
-        <img src={blobUrl("Attachment", a.guid)} alt={a.file_name ?? ""} loading="lazy" decoding="async" onError={() => setFailed(true)} className="block max-h-72 max-w-[min(280px,60vw)] min-h-16 min-w-16 object-cover" />
-      </button>
+      <AttachmentMenu a={a} onOpen={() => onView(a)}>
+        <button onClick={() => onView(a)} className="mb-0.5 overflow-hidden rounded-[18px] border border-border bg-raised">
+          <img src={blobUrl("Attachment", a.guid)} alt={a.file_name ?? ""} loading="lazy" decoding="async" draggable={false} onError={() => setFailed(true)} className="block max-h-72 max-w-[min(280px,60vw)] min-h-16 min-w-16 object-cover" />
+        </button>
+      </AttachmentMenu>
     );
   }
   return (
-    <button onClick={save} className={cn("mb-0.5 flex max-w-72 items-center gap-3 rounded-[18px] border px-3 py-2 text-left", mine ? "border-border-strong" : "border-border bg-raised")}>
+    <AttachmentMenu a={a}>
+    <button onClick={save} title="Save As…" className={cn("mb-0.5 flex max-w-72 items-center gap-3 rounded-[18px] border px-3 py-2 text-left", mine ? "border-border-strong" : "border-border bg-raised")}>
       <FileIcon className="size-5 shrink-0 text-muted" />
       <span className="min-w-0">
         <span className="block truncate text-[13px] text-fg">{a.file_name ?? "Attachment"}</span>
@@ -406,5 +441,6 @@ function AttachmentView({ a, mine, onView }: { a: Attachment; mine: boolean; onV
       </span>
       <Download className="size-4 shrink-0 text-subtle" />
     </button>
+    </AttachmentMenu>
   );
 }
