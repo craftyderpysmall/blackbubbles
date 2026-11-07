@@ -10,8 +10,7 @@ depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3' 'noto-fonts-emoji' 'dbus' 'alsa-lib'
 optdepends=('nss-mdns: reach the Mac by its .local name (see docs/LINUX_SETUP.md)'
             'wl-clipboard: Wayland clipboard for autofill'
             'wtype: click-to-paste codes on wlroots/KDE'
-            'ydotool: click-to-paste codes on GNOME'
-            'bluez: Find My beacon')
+            'ydotool: click-to-paste codes on GNOME')
 makedepends=('cargo' 'git' 'nodejs' 'npm')
 provides=('blackbubbles')
 conflicts=('blackbubbles')
@@ -31,20 +30,17 @@ build() {
   (cd ui && npm ci && npm run build)
   # custom-protocol embeds ui/dist into the binary.
   cargo build --release --locked -p bb-client --features custom-protocol
-  cargo build --release --locked -p bb-beacon
 }
 
 package() {
   cd blackbubbles
   install -Dm755 target/release/blackbubbles "$pkgdir/usr/bin/blackbubbles"
-  install -Dm755 target/release/bb-beacon "$pkgdir/usr/bin/bb-beacon"
   install -Dm644 packaging/linux/blackbubbles.desktop "$pkgdir/usr/share/applications/blackbubbles.desktop"
   install -Dm644 crates/client/icons/32x32.png "$pkgdir/usr/share/icons/hicolor/32x32/apps/blackbubbles.png"
   install -Dm644 crates/client/icons/128x128.png "$pkgdir/usr/share/icons/hicolor/128x128/apps/blackbubbles.png"
   install -Dm644 crates/client/icons/128x128@2x.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/blackbubbles.png"
   install -Dm644 crates/client/icons/icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/blackbubbles.svg"
   install -Dm644 packaging/linux/blackbubbles.service "$pkgdir/usr/lib/systemd/user/blackbubbles.service"
-  install -Dm644 "packaging/linux/blackbubbles-beacon@.service" "$pkgdir/usr/lib/systemd/system/blackbubbles-beacon@.service"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   # Bundled fonts, icons and map library (embedded in the binary).
   install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname/third-party" ui/licenses/*
