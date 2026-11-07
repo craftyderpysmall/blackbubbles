@@ -32,6 +32,7 @@ struct Schema {
     has_folder_type: bool,
     has_password: bool,
     has_deleted: bool,
+    has_fetch_flag: bool,
 }
 
 fn pick(cols: &[String], options: &[&'static str]) -> Option<&'static str> {
@@ -59,6 +60,7 @@ impl Schema {
             has_folder_type: cols.iter().any(|c| c == "ZFOLDERTYPE"),
             has_password: cols.iter().any(|c| c == "ZISPASSWORDPROTECTED"),
             has_deleted: cols.iter().any(|c| c == "ZMARKEDFORDELETION"),
+            has_fetch_flag: cols.iter().any(|c| c == "ZNEEDSINITIALFETCHFROMCLOUD"),
         })
     }
 
@@ -68,6 +70,12 @@ impl Schema {
 
     fn not_deleted(&self, alias: &str) -> String {
         if self.has_deleted { format!("IFNULL({alias}.ZMARKEDFORDELETION, 0) = 0") } else { "1".into() }
+    }
+
+    /// Hides iCloud placeholders the Mac never downloaded (the owner's phantom "E" folder
+    /// had ZNEEDSINITIALFETCHFROMCLOUD = 1). Notes.app doesn't show these either.
+    fn fetched(&self, alias: &str) -> String {
+        if self.has_fetch_flag { format!("IFNULL({alias}.ZNEEDSINITIALFETCHFROMCLOUD, 0) = 0") } else { "1".into() }
     }
 
     fn not_trash(&self, alias: &str) -> String {
@@ -180,14 +188,16 @@ impl Notes {
             };
             let sql = format!(
                 "SELECT f.Z_PK, f.{title}, {account},
-                    (SELECT COUNT(*) FROM {OBJECTS} n WHERE n.Z_ENT = {note} AND n.ZFOLDER = f.Z_PK AND {nd})
-                 FROM {OBJECTS} f WHERE f.Z_ENT = {folder} AND {fd} AND {nt} ORDER BY f.{title} COLLATE NOCASE",
+                    (SELECT COUNT(*) FROM {OBJECTS} n WHERE n.Z_ENT = {note} AND n.ZFOLDER = f.Z_PK AND {nd} AND {nf})
+                 FROM {OBJECTS} f WHERE f.Z_ENT = {folder} AND {fd} AND {nt} AND {ff} ORDER BY f.{title} COLLATE NOCASE",
                 title = s.folder_title,
                 note = s.note_ent,
                 folder = s.folder_ent,
                 nd = s.not_deleted("n"),
                 fd = s.not_deleted("f"),
                 nt = s.not_trash("f"),
+                ff = s.fetched("f"),
+                nf = s.fetched("n"),
             );
             let mut stmt = conn.prepare_cached(&sql).map_err(sql_err)?;
             let folders = stmt
@@ -209,13 +219,15 @@ impl Notes {
         format!(
             "SELECT n.Z_PK, n.{title}, n.ZSNIPPET, n.ZFOLDER, n.{modified}, {locked}
              FROM {OBJECTS} n LEFT JOIN {OBJECTS} f ON f.Z_PK = n.ZFOLDER
-             WHERE n.Z_ENT = {note} AND {nd} AND {nt} AND {filter} ORDER BY n.{modified} DESC",
+             WHERE n.Z_ENT = {note} AND {nd} AND {nt} AND {nf} AND n.ZFOLDER IS NOT NULL AND {filter}
+             ORDER BY n.{modified} DESC",
             title = s.note_title,
             modified = s.modified,
             locked = if s.has_password { "IFNULL(n.ZISPASSWORDPROTECTED, 0)" } else { "0" },
             note = s.note_ent,
             nd = s.not_deleted("n"),
             nt = s.not_trash("f"),
+            nf = s.fetched("n"),
         )
     }
 
@@ -315,11 +327,35 @@ impl Notes {
             let (Some(salt), Some(iterations), Some(wrapped), Some(iv), Some(tag), Some(data)) = (salt, iterations, wrapped, iv, tag, data) else {
                 return Err(missing());
             };
-            let locked = crate::notecrypt::Locked { salt: &salt, iterations: iterations.clamp(1, 10_000_000) as u32, wrapped_key: &wrapped, iv: &iv, tag: &tag, data: &data };
-            let plain = crate::notecrypt::decrypt(&locked, password).map_err(|e| match e {
-                crate::notecrypt::UnlockError::WrongPassword => ApiError::new(
-                    ErrorCode::PermissionDenied,
-                    "Wrong password. (Notes locked with your iPhone or Mac passcode can't be opened here.)",
+            let locked = crate::notecrypt::Locked { salt: &salt, iterations: iterations.clamp(0, 10_000_000) as u32, wrapped_key: &wrapped, iv: &iv, tag: &tag, data: &data };
+            // The account (via the note's folder) holds the password salt/iterations/verifier
+            // in the account-level scheme.
+            let account_row: Option<(Blob, Option<i64>, Blob)> = match s.folder_owner {
+                Some(owner) if obj.iter().any(|c| c == "ZCRYPTOVERIFIER") => conn
+                    .query_row(
+                        &format!(
+                            "SELECT a.ZCRYPTOSALT, a.ZCRYPTOITERATIONCOUNT, a.ZCRYPTOVERIFIER FROM {OBJECTS} n
+                             JOIN {OBJECTS} f ON f.Z_PK = n.ZFOLDER JOIN {OBJECTS} a ON a.Z_PK = f.{owner} WHERE n.Z_PK = ?1"
+                        ),
+                        [pk],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .optional()
+                    .map_err(sql_err)?,
+                _ => None,
+            };
+            let account = match &account_row {
+                Some((Some(salt), Some(iterations), Some(verifier))) if *iterations > 0 => Some(crate::notecrypt::Account {
+                    salt,
+                    iterations: (*iterations).min(10_000_000) as u32,
+                    verifier,
+                }),
+                _ => None,
+            };
+            let plain = crate::notecrypt::decrypt(&locked, account.as_ref(), password).map_err(|e| match e {
+                crate::notecrypt::UnlockError::WrongPassword => ApiError::new(ErrorCode::PermissionDenied, "Wrong password."),
+                crate::notecrypt::UnlockError::Unsupported => ApiError::unsupported(
+                    "Your password is correct, but this note uses an encryption format BlackBubbles can't read yet. Open it on your iPhone or Mac.",
                 ),
                 crate::notecrypt::UnlockError::Corrupt => missing(),
             })?;
@@ -440,7 +476,7 @@ mod tests {
              INSERT INTO Z_METADATA VALUES ('UUID-1');
              CREATE TABLE {OBJECTS} (Z_PK INTEGER PRIMARY KEY, Z_ENT INTEGER, ZTITLE1 TEXT, ZTITLE2 TEXT, ZSNIPPET TEXT,
                  ZFOLDER INTEGER, ZMODIFICATIONDATE1 REAL, ZMARKEDFORDELETION INTEGER, ZISPASSWORDPROTECTED INTEGER,
-                 ZFOLDERTYPE INTEGER, ZOWNER INTEGER, ZNAME TEXT);
+                 ZFOLDERTYPE INTEGER, ZOWNER INTEGER, ZNAME TEXT, ZNEEDSINITIALFETCHFROMCLOUD INTEGER);
              INSERT INTO {OBJECTS} (Z_PK, Z_ENT, ZNAME) VALUES (1, 14, 'iCloud');
              INSERT INTO {OBJECTS} (Z_PK, Z_ENT, ZTITLE2, ZOWNER, ZFOLDERTYPE) VALUES (2, 5, 'Notes', 1, 0), (3, 5, 'Recently Deleted', 1, 1);
              INSERT INTO {OBJECTS} (Z_PK, Z_ENT, ZTITLE1, ZSNIPPET, ZFOLDER, ZMODIFICATIONDATE1) VALUES
@@ -448,6 +484,10 @@ mod tests {
                  (11, 12, 'Old', 'gone', 3, 700000001.0);
              INSERT INTO {OBJECTS} (Z_PK, Z_ENT, ZTITLE1, ZFOLDER, ZMODIFICATIONDATE1, ZISPASSWORDPROTECTED) VALUES
                  (12, 12, 'Secret', 2, 600000000.0, 1);
+             -- From the owner's real Mac: a folder never downloaded from iCloud ('E'), and a
+             -- note with no folder and date 0 (shown as Dec 31 2000). Notes.app hides both.
+             INSERT INTO {OBJECTS} (Z_PK, Z_ENT, ZTITLE2, ZOWNER, ZFOLDERTYPE, ZNEEDSINITIALFETCHFROMCLOUD) VALUES (4, 5, 'E', 1, 0, 1);
+             INSERT INTO {OBJECTS} (Z_PK, Z_ENT, ZTITLE1, ZFOLDER, ZMODIFICATIONDATE1) VALUES (13, 12, 'New Note', NULL, 0.0);
              CREATE TABLE ZICNOTEDATA (Z_PK INTEGER PRIMARY KEY, ZNOTE INTEGER, ZDATA BLOB);"
         ))
         .unwrap();
@@ -456,11 +496,13 @@ mod tests {
 
         let notes = Notes::new(db);
         let Response::NoteFolders(folders) = notes.folders().unwrap() else { panic!() };
-        assert_eq!(folders.len(), 1, "trash is hidden");
+        assert_eq!(folders.len(), 1, "trash and the never-downloaded folder are hidden");
         assert_eq!((folders[0].name.as_str(), folders[0].account.as_str(), folders[0].count), ("Notes", "iCloud", 2));
 
         let Response::Notes(list) = notes.list(Some(&folders[0].id)).unwrap() else { panic!() };
         assert_eq!(list.iter().map(|n| n.title.as_str()).collect::<Vec<_>>(), ["Groceries", "Secret"]);
+        let Response::Notes(all) = notes.list(None).unwrap() else { panic!() };
+        assert!(all.iter().all(|n| n.title != "New Note"), "a note without a folder is hidden");
         assert_eq!(list[0].id, "x-coredata://UUID-1/ICNote/p10");
 
         let Response::Note(note) = notes.get(&list[0].id).unwrap() else { panic!() };

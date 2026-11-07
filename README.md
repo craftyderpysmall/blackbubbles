@@ -4,15 +4,15 @@ Your Apple world on **Linux and macOS** desktops: Messages, Photos, Notes, Calen
 
 It is not based on BlueBubbles. BlackBubbles has its own server, protocol and client.
 
-> **Status:** early. The client, protocol and autofill are tested end to end against the mock server. The macOS server compiles and passes its tests in CI but hasn't yet run on a real Mac. Expect rough edges.
+> **Status:** early, and in daily use on one Mac. Messages (with contact names), Notes and Find My run against real data; Photos, Calendar and Reminders are tested against the mock server but not yet on a real Mac. Expect rough edges.
 
 ## Features
 
 | | What you get | How it works on the Mac |
 |---|---|---|
-| **Messages** | iMessage and SMS chats, history, sending text and files (drag & drop), images inline | Reads `chat.db` directly and sends through AppleScript |
+| **Messages** | iMessage and SMS chats with contact names and group events, history, sending text and files (drag & drop), images inline, Save As | Reads `chat.db` directly and sends through AppleScript |
 | **Photos** | Your library and albums in a fast thumbnail grid, full-size viewer, save to disk | PhotoKit, rendered to JPEG (no HEIC on the client) |
-| **Notes** | Folders, search, read and edit, new notes. Locked notes are listed but stay unreadable and read-only | Reads `NoteStore.sqlite`; edits go through AppleScript |
+| **Notes** | Folders, search, read, edit, new and delete. Password-locked notes open read-only with your Notes password (passcode-locked ones can't) | Reads `NoteStore.sqlite` and decrypts locked notes locally; edits go through AppleScript |
 | **Calendar** | Month grid, agenda, create and delete events; reminders with a date show on their day | EventKit |
 | **Reminders** | Today / Scheduled / All / Completed, your lists, add, tick off, delete; timed reminders alert on your iPhone too | EventKit (the Reminders app's store) |
 | **Voice Memos** | List, play, seek, save | Recordings database and audio files |

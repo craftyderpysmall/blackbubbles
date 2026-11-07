@@ -68,5 +68,6 @@ This asks for your Apple ID password and then for 2FA codes. **If no code pops u
 - **Voice Memos is empty or says the library doesn't exist:** open the Voice Memos app on the Mac once (with Voice Memos turned on under your Apple ID → iCloud), so it downloads your recordings. After that, BlackBubbles can read them even while the app is closed.
 - **Contacts show as numbers:** names come from the Mac's Contacts app. Turn on Contacts under your Apple ID → iCloud on the Mac, and check that Contacts.app shows them.
 - **Find My "session expired":** run `findmy-login` again.
+- **Something's wrong and you don't know why:** from a paired Linux PC, run `blackbubbles request '"Diagnose"'`. It prints what `bbd` sees: Notes folders and lock settings, Contacts counts, Voice Memos files and its permissions. It shows counts and settings only, never note text or contact details.
 - **`findmy-login` waits for a code that never arrives:** type `sms` at the prompt to get it by text (see step 5).
 - **Linux says "failed to lookup address information" for `….local`:** the Linux PC can't resolve `.local` names yet. See [LINUX_SETUP.md → Let Linux find the Mac by name](LINUX_SETUP.md#let-linux-find-the-mac-by-name).

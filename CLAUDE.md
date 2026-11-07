@@ -38,43 +38,30 @@ Possible next steps (ask first): a tray icon, a "new conversation" composer, typ
 - **AppleScript** runs through `util::osascript` with a 30 s timeout. A hang almost always means macOS is showing a permission prompt on the Mac's screen (Delete in Notes hung this way).
 - **Secrets** live in mode-600 files. The client config is refused if group/other can read it.
 
-## Status
+## Status (2026-11-06)
 
-As of 2026-11-06, the owner has a Mac but **hasn't been able to set it up yet**. Everything Mac-side compiles and passes tests in CI (`macos-latest`), but none of it has run against real data yet:
-- EventKit and PhotoKit
-- AppleScript sending and note edits
-- iCloud sign-in for Find My: **works** (the owner sees their and family devices). **Owner hit this:** the 2FA pop-up never arrived, and their iOS has no "Get Verification Code" option. `findmy-login` offers `sms` at the code prompt (iCloud `PUT /appleauth/auth/verify/phone`, phone id 1 when the list doesn't parse).
+The owner's Mac is **set up and running `bbd`** (macOS, `users-MacBook-Pro.local:7878`). The Linux PC (Arch, Hyprland) runs the packaged client and reaches the Mac through mDNS (`nss-mdns`). Logs: `~/Library/Logs/bbd.log` on the Mac.
 
-When the owner gets Mac access, follow `docs/MAC_SETUP.md` with them and fix what breaks. I'd expect Find My sign-in and the Calendar/Photos permission prompts to break first. Logs are in `~/Library/Logs/bbd.log`.
+**Debug against real data, not guesses.** From the Linux PC, `blackbubbles request '"Diagnose"'` reports, from inside bbd: Notes folder/account/locked-note structure, Contacts counts and match rates, Voice Memos paths and counts, and bbd's TCC grants. Repeated guessing at Apple formats cost the owner many rounds; every real fix came from this data.
 
-Verified on Linux against the mock server, **with the Tauri client** (2026-11-06):
-- pairing from the CLI and from Settings; re-pairing closes the old connection
-- every tab renders, including colour emoji (flags, skin tones, ZWJ, ✈️-style VS16) and the bb:// thumbnails and the vector map
-- sending a text: optimistic bubble, then the server echo, and the chat list reorders
-- note edit and Ctrl+S save; calendar new-event dialog; photo lightbox with arrow keys
-- voice memo play/pause/progress
-- the per-chat mute bell (writes `muted_chats`)
-- Reminders (protocol 3, mock): lists and smart lists, tick off, quick add, creating one from the Calendar dialog, reminders on calendar days
-- locked notes: lock in the list, read-only panel; the server-side edit guard is unit-tested
-- Services: hiding Photos removes its tab and writes `[services]`
-- Find My: OpenFreeMap map through the proxy, floating list, selecting a device (marker, ring, detail card)
-- settings write the mode-600 config
-- desktop notifications from the window process; the window becomes secondary while `blackbubbles daemon` holds `primary.lock`
-- responsive layouts at 700px (single pane) and 900px (stacked calendar, dot cells)
+Confirmed working by the owner on real data:
+- Messages, with contact names (the number-as-`display_name` bug is fixed)
+- Find My sign-in and devices, and the family toggle. The 2FA pop-up never arrives for this account, and their iOS has no "Get Verification Code"; `findmy-login` → type `sms`.
+- Notes list, edit and Delete (Delete needs bbd's Automation grant for Notes, which it has)
 
-Verified only with the old egui client; the Rust code is unchanged, but these haven't been re-clicked in the Tauri UI:
-- autofill over HTTP and server events, including clipboard restore on SIGTERM
+Fixed from real data, waiting for the owner's next update to confirm:
+- **Phantom "E" folder:** `ZNEEDSINITIALFETCHFROMCLOUD = 1` (a never-downloaded iCloud placeholder). Folders and notes with that flag are now hidden.
+- **Undeletable "New Note" dated Dec 31 2000:** a note with `ZFOLDER` NULL and modification date 0. Notes without a folder are now hidden, as Notes.app does. Don't try to delete it (AppleScript can't see it, and we never write Apple's databases).
+- **Locked notes said "wrong password":** the account uses the **account-level** scheme. Account row 72 has `ZCRYPTOSALT` 16 B, `ZCRYPTOITERATIONCOUNT` 20000 and `ZCRYPTOVERIFIER` 24 B. The note has iterations 0, a 16-byte `ZCRYPTOWRAPPEDKEY` and its own salt; IV and tag are on `ZICNOTEDATA`. We used the note's iterations (0), so every password failed. Now `notecrypt::decrypt` unwraps the account verifier first (certain right/wrong-password answer), then tries a few note-key constructions, accepted only if the AES-GCM tag verifies. **If the owner reports "password is correct, but … format BlackBubbles can't read yet"**, none of the constructions matched: research Apple's account-level Notes crypto (e.g. apple_cloud_notes_parser's documentation) rather than adding more guesses.
 
-Not exercised yet:
-- the Mac's EventKit Reminders code (`crates/mac/src/reminders.rs`): type-checked for macOS, never run
-- Reminders-due desktop notifications (the timing rule is unit-tested, not observed on screen)
+Known, not fixable here:
+- **Voice Memos:** the Mac has 0 recordings (`Diagnose`); iCloud isn't syncing them between the owner's iPhone and Mac. The owner said to leave it.
+- **Smart folders** (`ZFOLDERTYPE` = 2, `ZSMARTFOLDERQUERYJSON`) list with 0 notes; their queries aren't evaluated.
+- **Contacts:** the Mac's address book has 51 phone numbers, and every chat handle that's in it resolves. The other numbers aren't contacts.
 
-Not exercised yet in the Tauri UI:
-- attachment send (button and drag-and-drop)
-- Save to Downloads
-- event delete
-- Gmail add/remove
-- the Tauri client on macOS (CI builds it, nobody has run it)
+Not yet exercised on real data: Photos (PhotoKit), Calendar and Reminders (EventKit; TCC grants exist), sending messages and attachments, Save As, the Tauri client on macOS.
+
+Verified against the mock server on Linux: every tab renders (colour emoji, thumbnails, map), sending with the optimistic bubble and echo, note edit/save, calendar and reminders dialogs, lightbox, voice playback, mute bell, Services toggles, family toggle, group events, contact names, responsive layouts, notifications, and the daemon taking `primary.lock`.
 
 ## Layout
 
@@ -96,7 +83,7 @@ docs/            MAC_SETUP.md, LINUX_SETUP.md
 ```sh
 (cd ui && npm ci && npm run build)          # type-check + bundle the UI into ui/dist
 cargo build --workspace --features bb-client/custom-protocol
-cargo test --workspace                       # ~48 tests; all must pass
+cargo test --workspace                       # ~53 tests; all must pass
 cargo run -p bb-server -- --data-dir /tmp/bbd pair --host 127.0.0.1 --port 17878
 cargo run -p bb-server -- --data-dir /tmp/bbd run --mock --mock-codes 20 --bind 127.0.0.1:17878
 BLACKBUBBLES_CONFIG_DIR=/tmp/bbc cargo run -p bb-client -- pair 'blackbubbles://…'
@@ -108,7 +95,7 @@ BLACKBUBBLES_CONFIG_DIR=/tmp/bbc cargo run -p bb-client --features custom-protoc
 - **Mock server:** `--mock` serves fake chats, events, notes, memos and photos (generated BMP/WAV), plus Find My devices (a family member's iPhone appears only with include_family). Writes echo events like the Mac does: a sent message comes back as `NewMessage` after 0.5 s, and note and calendar writes emit their `*Changed` events. `--mock-codes N` sends a fake verification-code text every N seconds.
 - **Developer environment variables for the client:**
   - `BLACKBUBBLES_CONFIG_DIR`: use a scratch config.
-  - `BLACKBUBBLES_TAB=<messages|photos|notes|calendar|voice|findmy|settings>`: the tab to open on.
+  - `BLACKBUBBLES_TAB=<messages|photos|notes|calendar|reminders|voice|findmy|settings>`: the tab to open on.
   - `BLACKBUBBLES_OPEN_FIRST_CHAT=1`: open the first chat.
   - `BLACKBUBBLES_FORCE_WIDTH=<px>`: caps the UI root's width, to test responsive layouts on a tiling window manager.
 - **macOS type-check from Linux:** the system Rust has no rustup. Install rustup into a scratch dir and add `aarch64-apple-darwin`. Point `CC_aarch64_apple_darwin` at a stub script that only creates the `-o` output file. Then run `cargo check --target aarch64-apple-darwin --workspace`. CI's macOS job is the real build-and-link check.
@@ -158,8 +145,8 @@ Screens:
   - Contact names (fixed 2026-11-06 from real data): the server used to send the chat number as `display_name` for one-on-one chats, which hid every contact name. `display_name` is now only a real group name; the UI's `groupName()` also ignores a name equal to a participant or `chat\d+`. `bbd` reads `~/Library/Application Support/AddressBook/{,Sources/*/}AddressBook-v22.abcddb` (Full Disk Access covers it) and answers `ListContacts` with handle → name for every handle in chat.db. Matching uses lowercase emails and the last 10 digits of phone numbers (`crates/mac/src/contacts.rs`). The UI's `useNames()` applies them to titles, avatars, sender labels and group events; the notifier too.
   - Save As…: `save_blob_as` opens a native dialog (tauri-plugin-dialog, Rust side, so no JS permission). Attachments have a right-click menu (Open, Save As…). The web view's own image menu is suppressed, because its "Save Image As…" can't save bb:// images.
   - Text selection app-wide is white with black text; inside white surfaces (your iMessage bubbles, `.bb-inverted`) it flips to black with white text.
-- **Photos:** album pills, lazy thumbnails with an LRU cache, video and favourite badges, lightbox with arrow keys and Save.
-- **Notes:** folder chips, search, plain-text editor (first line is the title), Ctrl/⌘+S, "Edited/Saved" badge, New note. Locked notes show a lock, and opening one asks for the Notes password: `UnlockNote` decrypts it read-only (`crates/mac/src/notecrypt.rs`: PBKDF2-SHA256 → RFC 3394 unwrap → AES-128-GCM with 16-byte IV). The password is never stored. Notes locked with the device passcode can't be opened (keychain-held key). `bbd` still refuses `UpdateNote` on locked notes. Right-click a note → Delete (with a confirm dialog) moves it to Recently Deleted via AppleScript. The mock's locked note ("Diary") opens with the password 1234.
+- **Photos:** album pills, lazy thumbnails with an LRU cache, video and favourite badges, lightbox with arrow keys and Save As….
+- **Notes:** folder chips, search, plain-text editor (first line is the title), Ctrl/⌘+S, "Edited/Saved" badge, New note. Locked notes show a lock, and opening one asks for the Notes password: `UnlockNote` decrypts it read-only (`crates/mac/src/notecrypt.rs`: PBKDF2-SHA256 → RFC 3394 unwrap → AES-128-GCM with 16-byte IV; per-note and account-level schemes, see Status). The password is never stored. Notes locked with the device passcode can't be opened (keychain-held key). `bbd` still refuses `UpdateNote` on locked notes. Right-click a note → Delete (with a confirm dialog) moves it to Recently Deleted via AppleScript. The mock's locked note ("Diary") opens with the password 1234.
 - **Calendar:** month grid with today as a pill, day agenda, delete. Reminders with a due date show on their day as hollow rings (events are dots) and in the agenda with a checkbox. The "New" dialog switches between Event (title, location, notes, all day, times, calendar) and Reminder (title, notes, date, optional time, list, priority).
 - **Reminders:** Today (includes overdue) / Scheduled (grouped by day) / All (grouped by list) / Completed tiles with counts, the owner's lists with colours, quick add (title + optional date/time), tick off (stays visible ~1 s), delete, "Show completed". Completed history is only fetched when shown. Timed reminders get an EventKit alarm so they also alert on the iPhone.
 - **Voice Memos:** search, play, seek, save; the player card's primary is play/pause.
@@ -178,5 +165,6 @@ Behaviour:
   - Tauri is 2.12; 3.0 is in alpha, so stay on 2.
   - rodio 0.23 uses `DeviceSinkBuilder` and `Player`. Its `wav` feature is needed for PCM; `symphonia-wav` alone can't decode it.
   - JS dependencies are pinned exactly in `ui/package.json` with a lockfile. CI runs `npm ci`.
-- **Reporting:** be explicit about what was verified versus only compiled. The owner can't test Mac features yet.
+- **Reporting:** be explicit about what was verified on real data, against the mock, or only compiled.
+- **PKGBUILD:** makepkg rewrites `pkgver=` in place. Never `git checkout` the file to drop that: it also drops your own edits (the beacon removal was lost that way and broke the owner's build). Reset only the `pkgver=` line, and test with a real `makepkg` build in `~/.cache` (not `/tmp`, which is RAM-backed and too small).
 - **Questions:** ask before large or irreversible choices, such as the frontend stack or deleting the egui client.

@@ -7,9 +7,14 @@
 //! 2. note key = AES key unwrap (RFC 3394) of the wrapped key with that KEK
 //! 3. body = AES-128-GCM(note key, 16-byte IV, tag) → the usual gzipped protobuf
 //!
-//! A wrong password fails the key-unwrap integrity check in step 2. Notes locked with the
-//! device passcode (newer iOS/macOS) wrap their key with a keychain secret instead, so no
-//! password opens them here.
+//! A wrong password fails the key-unwrap integrity check in step 2.
+//!
+//! Account-level scheme (the owner's real database, 2026-11-06): the *account* row holds
+//! the salt, 20000 iterations and a 24-byte `ZCRYPTOVERIFIER`; the note has iterations 0
+//! and a 16-byte `ZCRYPTOWRAPPEDKEY`. Unwrapping the verifier with the password's KEK
+//! proves the password (AES-KW integrity) and yields an account key. How the note key
+//! derives from it isn't documented, so [`decrypt`] tries a few constructions and accepts
+//! only one whose AES-GCM tag verifies, so it never returns wrong plaintext.
 
 use aes::Aes128;
 use aes::cipher::{BlockDecrypt, KeyInit, generic_array::GenericArray};
@@ -23,8 +28,18 @@ const KW_IV: u64 = 0xA6A6_A6A6_A6A6_A6A6;
 
 #[derive(Debug, PartialEq)]
 pub enum UnlockError {
+    /// Certain: the key-wrap integrity check failed.
     WrongPassword,
+    /// The password is right, but no known construction decrypts this note.
+    Unsupported,
     Corrupt,
+}
+
+/// Password data stored on the Notes account (account-level scheme).
+pub struct Account<'a> {
+    pub salt: &'a [u8],
+    pub iterations: u32,
+    pub verifier: &'a [u8],
 }
 
 pub struct Locked<'a> {
@@ -89,17 +104,60 @@ pub(crate) fn wrap_key(kek: &[u8; 16], key: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The decrypted body blob (gzipped protobuf, same as an unlocked note's ZDATA).
-pub fn decrypt(locked: &Locked, password: &str) -> Result<Vec<u8>, UnlockError> {
-    let kek = kek(password, locked.salt, locked.iterations);
-    let key = unwrap_key(&kek, locked.wrapped_key).ok_or(UnlockError::WrongPassword)?;
+fn gcm_open(key: &[u8], locked: &Locked) -> Option<Vec<u8>> {
     if key.len() != 16 || locked.iv.len() != 16 || locked.tag.len() != 16 {
-        return Err(UnlockError::Corrupt);
+        return None;
     }
-    let cipher = Aes128Gcm16::new(GenericArray::from_slice(&key));
+    let cipher = Aes128Gcm16::new(GenericArray::from_slice(key));
     let mut sealed = locked.data.to_vec();
     sealed.extend_from_slice(locked.tag);
-    cipher.decrypt(Nonce::<U16>::from_slice(locked.iv), Payload { msg: &sealed, aad: &[] }).map_err(|_| UnlockError::Corrupt)
+    cipher.decrypt(Nonce::<U16>::from_slice(locked.iv), Payload { msg: &sealed, aad: &[] }).ok()
+}
+
+fn ecb(key: &[u8], block: &[u8], encrypt: bool) -> Option<Vec<u8>> {
+    use aes::cipher::BlockEncrypt;
+    if key.len() != 16 || block.len() != 16 {
+        return None;
+    }
+    let cipher = Aes128::new(GenericArray::from_slice(key));
+    let mut b = GenericArray::clone_from_slice(block);
+    if encrypt { cipher.encrypt_block(&mut b) } else { cipher.decrypt_block(&mut b) }
+    Some(b.to_vec())
+}
+
+/// The decrypted body blob (gzipped protobuf, same as an unlocked note's ZDATA).
+pub fn decrypt(locked: &Locked, account: Option<&Account>, password: &str) -> Result<Vec<u8>, UnlockError> {
+    if locked.iv.len() != 16 || locked.tag.len() != 16 {
+        return Err(UnlockError::Corrupt);
+    }
+    // Per-note scheme: the note has its own iterations and a 24-byte wrapped key.
+    if locked.iterations > 0 && locked.wrapped_key.len() >= 24 {
+        let kek = kek(password, locked.salt, locked.iterations);
+        if let Some(key) = unwrap_key(&kek, locked.wrapped_key) {
+            return gcm_open(&key, locked).ok_or(UnlockError::Corrupt);
+        }
+        if account.is_none() {
+            return Err(UnlockError::WrongPassword);
+        }
+    }
+    // Account scheme: the verifier proves the password and yields the account key.
+    let account = account.ok_or(UnlockError::Unsupported)?;
+    let account_kek = kek(password, account.salt, account.iterations);
+    let master = unwrap_key(&account_kek, account.verifier).ok_or(UnlockError::WrongPassword)?;
+    let wrapped = locked.wrapped_key;
+    let note_kek = kek(password, locked.salt, account.iterations);
+    let candidates: Vec<Option<Vec<u8>>> = vec![
+        unwrap_key(master.as_slice().try_into().map_err(|_| UnlockError::Corrupt)?, wrapped),
+        ecb(&master, wrapped, false),
+        ecb(&master, wrapped, true),
+        Some(master.clone()),
+        (wrapped.len() == 16).then(|| master.iter().zip(wrapped).map(|(a, b)| a ^ b).collect()),
+        ecb(&account_kek, wrapped, false),
+        unwrap_key(&note_kek, wrapped),
+        ecb(&note_kek, wrapped, false),
+        Some(note_kek.to_vec()),
+    ];
+    candidates.into_iter().flatten().find_map(|key| gcm_open(&key, locked)).ok_or(UnlockError::Unsupported)
 }
 
 /// Encrypt a body the way Notes does (test fixtures only). Returns (wrapped key, IV, tag, data).
@@ -131,8 +189,30 @@ mod tests {
     fn round_trip_and_wrong_password() {
         let (wrapped, iv, tag, data) = encrypt_for_test("hunter2", b"saltsaltsaltsalt", 1000, b"secret body");
         let locked = Locked { salt: b"saltsaltsaltsalt", iterations: 1000, wrapped_key: &wrapped, iv: &iv, tag: &tag, data: &data };
-        assert_eq!(decrypt(&locked, "hunter2").unwrap(), b"secret body");
-        assert_eq!(decrypt(&locked, "wrong").unwrap_err(), UnlockError::WrongPassword);
+        assert_eq!(decrypt(&locked, None, "hunter2").unwrap(), b"secret body");
+        assert_eq!(decrypt(&locked, None, "wrong").unwrap_err(), UnlockError::WrongPassword);
+    }
+
+    /// The owner's layout: account salt/iterations/24-byte verifier; note iterations 0 and
+    /// a 16-byte key (here the note key encrypted with the account key, one candidate).
+    #[test]
+    fn account_scheme() {
+        let account_key = [3u8; 16];
+        let note_key = [7u8; 16];
+        let verifier = wrap_key(&kek("pw", b"accountsaltsalt!", 500), &account_key);
+        let wrapped16 = ecb(&account_key, &note_key, true).unwrap();
+        let iv = [9u8; 16];
+        let cipher = Aes128Gcm16::new(GenericArray::from_slice(&note_key));
+        let mut sealed = cipher.encrypt(Nonce::<U16>::from_slice(&iv), b"locked body".as_slice()).unwrap();
+        let tag = sealed.split_off(sealed.len() - 16);
+        let note = Locked { salt: b"notesaltnotesalt", iterations: 0, wrapped_key: &wrapped16, iv: &iv, tag: &tag, data: &sealed };
+        let account = Account { salt: b"accountsaltsalt!", iterations: 500, verifier: &verifier };
+        assert_eq!(decrypt(&note, Some(&account), "pw").unwrap(), b"locked body");
+        assert_eq!(decrypt(&note, Some(&account), "nope").unwrap_err(), UnlockError::WrongPassword);
+        // Right password but an unknown construction: says so instead of "wrong password".
+        let garbage = [0u8; 16];
+        let odd = Locked { wrapped_key: &garbage, ..note };
+        assert_eq!(decrypt(&odd, Some(&account), "pw").unwrap_err(), UnlockError::Unsupported);
     }
 
     fn hex(s: &str) -> Vec<u8> {
