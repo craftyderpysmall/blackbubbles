@@ -87,7 +87,7 @@ packaging/       launchd agent, .app bundling, systemd units, PKGBUILD
 ## Getting started
 
 1. **Mac:** follow [docs/MAC_SETUP.md](docs/MAC_SETUP.md).
-2. **Linux:** follow [docs/LINUX_SETUP.md](docs/LINUX_SETUP.md).
+2. **Linux:** follow [docs/LINUX_SETUP.md](docs/LINUX_SETUP.md). To reach the Mac by its `.local` name, Linux needs `nss-mdns`; that guide covers it.
 3. **macOS client:** install Node.js, run `packaging/macos/make-app.sh` and open the resulting `BlackBubbles.app`.
 
 You can try the client without a Mac by running the mock server:

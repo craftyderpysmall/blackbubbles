@@ -69,3 +69,4 @@ This asks for your Apple ID password and then for 2FA codes. You may get **two**
 - **"cannot open … chat.db":** Full Disk Access is missing, or was granted before the binary changed. Remove `bbd` from the list, add it again, then kickstart.
 - **Messages not sending:** check System Settings → Privacy & Security → Automation → bbd → Messages.
 - **Find My "session expired":** run `findmy-login` again.
+- **Linux says "failed to lookup address information" for `….local`:** the Linux PC can't resolve `.local` names yet. See [LINUX_SETUP.md → Let Linux find the Mac by name](LINUX_SETUP.md#let-linux-find-the-mac-by-name).

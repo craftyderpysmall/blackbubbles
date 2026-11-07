@@ -7,7 +7,8 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/craftyderpysmall/blackbubbles"
 license=('MIT')
 depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3' 'noto-fonts-emoji' 'dbus' 'alsa-lib' 'libxkbcommon' 'wayland')
-optdepends=('wl-clipboard: Wayland clipboard for autofill'
+optdepends=('nss-mdns: reach the Mac by its .local name (see docs/LINUX_SETUP.md)'
+            'wl-clipboard: Wayland clipboard for autofill'
             'wtype: click-to-paste codes on wlroots/KDE'
             'ydotool: click-to-paste codes on GNOME'
             'bluez: Find My beacon')

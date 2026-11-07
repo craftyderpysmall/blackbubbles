@@ -22,6 +22,31 @@ sudo install -m755 target/release/blackbubbles target/release/bb-beacon /usr/bin
 
 The window is a Tauri app on the system WebKitGTK. Install a colour emoji font (Noto Color Emoji above): it renders every emoji sequence. A bundled subset is only a fallback, and it can't draw emoji written with a variation selector such as ✈️.
 
+## Let Linux find the Mac by name
+
+`bbd pair` often prints the Mac's local name, like `my-mac.local`. Many Linux systems, Arch included, can't look those names up out of the box. BlackBubbles then fails with:
+
+```
+connecting to my-mac.local:7878: failed to lookup address information: Name or service not known
+```
+
+Fix it once (Arch):
+
+```sh
+sudo pacman -S --needed avahi nss-mdns
+sudo systemctl enable --now avahi-daemon
+sudo sed -i 's/^hosts: mymachines resolve/hosts: mymachines mdns_minimal [NOTFOUND=return] resolve/' /etc/nsswitch.conf
+getent hosts my-mac.local      # should print the Mac's IP
+```
+
+On Debian/Ubuntu, `libnss-mdns` is normally installed already. If not, run `sudo apt install libnss-mdns`, which also edits `/etc/nsswitch.conf`.
+
+If your `hosts:` line looks different from the one the `sed` command expects, add `mdns_minimal [NOTFOUND=return]` by hand, just before `resolve` (or before `dns`). Then restart BlackBubbles; you don't need to pair again.
+
+**Other options:**
+- **Use the Mac's IP address:** on the Mac, run `bbd pair --host 192.168.x.y` and pair with that string. This breaks if the router gives the Mac a different IP, so reserve one for it in your router's DHCP settings.
+- **Use Tailscale on both machines:** pair with the Mac's Tailscale name or IP. This also works away from home.
+
 ## Pair
 
 Run `bbd pair` on the Mac (see [MAC_SETUP.md](MAC_SETUP.md)), then either:
