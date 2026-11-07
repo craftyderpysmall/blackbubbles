@@ -1,7 +1,6 @@
 //! BlackBubbles: your Apple world on Linux and macOS.
 
 mod audio;
-mod beacon;
 mod blob;
 mod commands;
 mod config;
@@ -32,11 +31,10 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
-    /// Register this PC as a Find My beacon (Linux).
-    BeaconSetup {
-        #[arg(long)]
-        name: Option<String>,
-    },
+    /// Developer aid: send one request (proto JSON, e.g. '"ListContacts"') to the Mac and
+    /// print the reply as JSON.
+    #[command(hide = true)]
+    Request { json: String },
 }
 
 /// One process is "primary" and does autofill and notifications: whoever holds this
@@ -100,25 +98,23 @@ fn main() -> Result<()> {
             println!("Paired as {name:?}. Settings saved to {}", config::path()?.display());
             Ok(())
         }
-        Some(Command::BeaconSetup { name }) => {
-            let mut config = config::Config::load()?;
-            let server = config.server.clone().context("pair with your Mac first")?;
-            let client = conn::Client::new(runtime.handle().clone(), Some(server));
-            let name = name.unwrap_or_else(conn::device_name);
-            let beacon = runtime.block_on(async {
-                // Give the connection a moment to come up.
+        Some(Command::Request { json }) => {
+            let request: bb_proto::Request = serde_json::from_str(&json).context("not a valid request")?;
+            let config = config::Config::load()?;
+            let client = conn::Client::new(runtime.handle().clone(), config.server.clone());
+            let reply = runtime.block_on(async {
                 for _ in 0..50 {
                     if matches!(client.status(), conn::Status::Connected { .. }) {
                         break;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
-                beacon::setup(&client, &name).await
-            })?;
-            config.beacon = Some(beacon);
-            config.save()?;
-            println!("Registered. Public keys: {}", config::beacon_public_path()?.display());
-            println!("Now run: sudo systemctl enable --now blackbubbles-beacon@{}", std::env::var("USER").unwrap_or_default());
+                client.request(request).await
+            });
+            match reply {
+                Ok(response) => println!("{}", serde_json::to_string_pretty(&response)?),
+                Err(err) => println!("error: {err:?}"),
+            }
             Ok(())
         }
         Some(Command::Daemon) => {
@@ -220,7 +216,6 @@ fn run_gui(runtime: &tokio::runtime::Runtime, state: commands::AppState) -> Resu
             commands::save_blob,
             commands::save_blob_as,
             commands::pair,
-            commands::beacon_setup,
             commands::save_notifications,
             commands::save_services,
             commands::save_autofill,

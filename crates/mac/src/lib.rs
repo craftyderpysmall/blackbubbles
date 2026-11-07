@@ -5,6 +5,7 @@
 //! through AppleScript or the frameworks, never by modifying Apple's databases.
 
 pub mod contacts;
+mod diagnose;
 pub mod findmy;
 pub mod messages;
 pub mod notes;
@@ -13,8 +14,6 @@ mod typedstream;
 mod util;
 pub mod voicememos;
 
-#[cfg(target_os = "macos")]
-pub mod anisette;
 #[cfg(target_os = "macos")]
 pub mod calendar;
 #[cfg(target_os = "macos")]
@@ -109,9 +108,14 @@ impl Backend for MacBackend {
             Request::ListVoiceMemos => self.voice_memos.list(),
             Request::UnlockNote { id, password } => self.notes.unlock(&id, &password),
             Request::DeleteNote { id } => notes::Notes::delete(&id),
+            Request::Diagnose => Ok(Response::Diagnostics(diagnose::report(
+                self.notes.db_path(),
+                &self.contacts,
+                &self.messages.handles().unwrap_or_default(),
+                self.voice_memos.dir(),
+            ))),
             Request::ListContacts => self.contacts.names(&self.messages.handles()?),
-            Request::ListFindMyDevices => self.findmy.list(),
-            Request::RegisterBeacon { id, name, private_keys } => self.findmy.register_beacon(&id, &name, &private_keys),
+            Request::ListFindMyDevices { include_family } => self.findmy.list(include_family),
             Request::GetBlob { kind: BlobKind::Attachment, id, offset, len } => self.messages.attachment_blob(&id, offset, len),
             Request::GetBlob { kind: BlobKind::VoiceMemo, id, offset, len } => self.voice_memos.blob(&id, offset, len),
             other => self.calendar_or_photos(other),

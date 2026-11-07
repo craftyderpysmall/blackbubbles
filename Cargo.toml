@@ -37,12 +37,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 directories = "6"
 rusqlite = "0.37"
-p224 = { version = "0.13", features = ["ecdh"] }
 aes-gcm = "0.10"
 aes = "0.8"
-cbc = { version = "0.1", features = ["std"] }
-hmac = "0.12"
 pbkdf2 = "0.12"
 num-bigint = "0.4"
-plist = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "cookies", "blocking"] }

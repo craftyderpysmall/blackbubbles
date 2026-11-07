@@ -407,6 +407,7 @@ impl Backend for MockBackend {
                 self.emit_later(Event::NotesChanged);
                 Response::Ok
             }
+            Request::Diagnose => Response::Diagnostics("mock server: nothing to diagnose".into()),
             Request::ListContacts => Response::Contacts(vec![ContactName { handle: "+15551230003".into(), name: "Taylor Kim".into() }]),
             Request::ListVoiceMemos => Response::VoiceMemos(
                 (1..=3)
@@ -479,33 +480,34 @@ impl Backend for MockBackend {
                         .collect(),
                 )
             }
-            Request::ListFindMyDevices => Response::FindMyDevices(vec![
-                FindMyDevice {
-                    id: "iphone".into(),
-                    name: "iPhone".into(),
-                    kind: DeviceKind::Apple,
-                    model: "iPhone 16".into(),
-                    battery: Some(0.82),
-                    location: Some(Location { lat: 37.3349, lon: -122.0090, accuracy_m: 15.0, at: now_ms() - 120_000 }),
-                },
-                FindMyDevice {
-                    id: "mac".into(),
-                    name: "Mac mini".into(),
-                    kind: DeviceKind::Apple,
-                    model: "Mac mini".into(),
-                    battery: None,
-                    location: Some(Location { lat: 37.3318, lon: -122.0312, accuracy_m: 30.0, at: now_ms() - 600_000 }),
-                },
-                FindMyDevice {
-                    id: "beacon-linux".into(),
-                    name: "This PC".into(),
-                    kind: DeviceKind::Beacon,
-                    model: "BLE beacon".into(),
-                    battery: None,
-                    location: Some(Location { lat: 37.3305, lon: -122.0280, accuracy_m: 50.0, at: now_ms() - 3_600_000 }),
-                },
-            ]),
-            Request::RegisterBeacon { .. } => Response::Ok,
+            Request::ListFindMyDevices { include_family } => {
+                let mut devices = vec![
+                    FindMyDevice {
+                        id: "iphone".into(),
+                        name: "iPhone".into(),
+                        model: "iPhone 16".into(),
+                        battery: Some(0.82),
+                        location: Some(Location { lat: 37.3349, lon: -122.0090, accuracy_m: 15.0, at: now_ms() - 120_000 }),
+                    },
+                    FindMyDevice {
+                        id: "mac".into(),
+                        name: "Mac mini".into(),
+                        model: "Mac mini".into(),
+                        battery: None,
+                        location: Some(Location { lat: 37.3318, lon: -122.0312, accuracy_m: 30.0, at: now_ms() - 600_000 }),
+                    },
+                ];
+                if include_family {
+                    devices.push(FindMyDevice {
+                        id: "family-iphone".into(),
+                        name: "Mom's iPhone".into(),
+                        model: "iPhone 15".into(),
+                        battery: Some(0.12),
+                        location: Some(Location { lat: 37.3305, lon: -122.0280, accuracy_m: 20.0, at: now_ms() - 900_000 }),
+                    });
+                }
+                Response::FindMyDevices(devices)
+            }
             Request::GetBlob { kind, id, offset, len } => match kind {
                 BlobKind::PhotoThumbnail => slice_blob(bmp(256, 256, hash(&id)), offset, len, "image/bmp")?,
                 BlobKind::Photo | BlobKind::Attachment => {

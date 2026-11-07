@@ -157,8 +157,13 @@ impl Messages {
                         "SELECT h.id FROM chat_handle_join chj JOIN handle h ON h.ROWID = chj.handle_id WHERE chj.chat_id = ?1",
                     )
                     .map_err(sql_err)?;
-                let participants: Vec<String> =
+                let mut participants: Vec<String> =
                     handles.query_map([rowid], |r| r.get(0)).and_then(Iterator::collect).map_err(sql_err)?;
+                if participants.is_empty()
+                    && let Some(id) = identifier.clone().filter(|i| !i.is_empty())
+                {
+                    participants.push(id);
+                }
                 let last_message = conn
                     .prepare_cached(&format!(
                         "SELECT {MESSAGE_COLUMNS} FROM chat_message_join cmj JOIN message m ON m.ROWID = cmj.message_id
@@ -170,7 +175,9 @@ impl Messages {
                     .optional()
                     .map_err(sql_err)?
                     .map(|(_, m, _)| m);
-                let display_name = display_name.filter(|n| !n.is_empty()).or(identifier);
+                // Only a real (group) name. Never fall back to the number: clients put the
+                // contact name there, and a number in display_name hid it.
+                let display_name = display_name.filter(|n| !n.trim().is_empty());
                 let my_address = mine.map(|m| m.strip_prefix("E:").or_else(|| m.strip_prefix("P:")).unwrap_or(&m).to_string());
                 chats.push(Chat { guid, display_name, participants, service: service(service_name.as_deref()), last_message, my_address });
             }
@@ -417,7 +424,8 @@ pub(crate) mod tests {
         assert_eq!(chats.len(), 2);
         assert_eq!(chats[0].guid, "SMS;-;55512");
         assert_eq!(chats[0].service, Service::Sms);
-        assert_eq!(chats[1].display_name.as_deref(), Some("+15550001"));
+        assert_eq!(chats[1].display_name, None, "an unnamed chat has no display_name, so contact names show");
+        assert_eq!(chats[1].participants, ["+15550001"]);
         assert_eq!(chats[1].my_address.as_deref(), Some("+15559999"));
         assert_eq!(chats[0].my_address.as_deref(), Some("me@icloud.com"));
         // The tapback (associated_message_type 2000) is not the last message.

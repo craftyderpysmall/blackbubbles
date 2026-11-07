@@ -14,7 +14,6 @@ pub struct Config {
     pub autofill: bb_autofill::Config,
     pub notifications: Notifications,
     pub services: Services,
-    pub beacon: Option<BeaconConfig>,
 }
 
 /// Which Apple services BlackBubbles shows. A hidden service gets no tab and no
@@ -29,11 +28,13 @@ pub struct Services {
     pub reminders: bool,
     pub voice_memos: bool,
     pub find_my: bool,
+    /// Include Family Sharing members' devices in Find My.
+    pub find_my_family: bool,
 }
 
 impl Default for Services {
     fn default() -> Self {
-        Self { messages: true, photos: true, notes: true, calendar: true, reminders: true, voice_memos: true, find_my: true }
+        Self { messages: true, photos: true, notes: true, calendar: true, reminders: true, voice_memos: true, find_my: true, find_my_family: true }
     }
 }
 
@@ -66,7 +67,6 @@ pub struct Notifications {
     // Find My
     pub low_battery: bool,
     pub low_battery_percent: u8,
-    pub beacon_located: bool,
     // Connection
     pub connection: bool,
     // Quiet hours (local time, HH:MM; may wrap past midnight)
@@ -95,7 +95,6 @@ impl Default for Notifications {
             voice_memos: false,
             low_battery: true,
             low_battery_percent: 20,
-            beacon_located: false,
             connection: true,
             quiet_hours: false,
             quiet_start: "22:00".into(),
@@ -158,15 +157,6 @@ pub struct ServerConfig {
     pub token: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BeaconConfig {
-    pub id: String,
-    pub name: String,
-    /// Hex P-224 private keys. Only the public halves go to the beacon service.
-    pub private_keys: Vec<String>,
-    pub rotate_secs: u64,
-}
-
 pub fn dir() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("BLACKBUBBLES_CONFIG_DIR") {
         return Ok(PathBuf::from(dir));
@@ -200,7 +190,3 @@ impl Config {
     }
 }
 
-/// Public keys file for the root beacon service (no secrets).
-pub fn beacon_public_path() -> Result<PathBuf> {
-    Ok(dir()?.join("beacon-public.json"))
-}

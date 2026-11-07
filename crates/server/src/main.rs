@@ -54,15 +54,7 @@ enum Command {
     /// Remove a paired device by name.
     Revoke { name: String },
     /// Sign in to iCloud for Find My (interactive, asks for the 2FA code).
-    FindmyLogin {
-        apple_id: String,
-        /// Also sign in to the Offline-Finding service so beacons (your Linux PC) can be located.
-        #[arg(long)]
-        beacons: bool,
-        /// Anisette server URL. Defaults to this Mac's own anisette on macOS.
-        #[arg(long)]
-        anisette_url: Option<String>,
-    },
+    FindmyLogin { apple_id: String },
 }
 
 fn data_dir(cli: &Cli) -> Result<PathBuf> {
@@ -123,22 +115,12 @@ fn main() -> Result<()> {
             println!("removed {removed} device(s)");
             Ok(())
         }
-        Command::FindmyLogin { apple_id, beacons, anisette_url } => {
+        Command::FindmyLogin { apple_id } => {
             let password = rpassword_prompt("Apple ID password: ")?;
             let icloud_dir = dir.join("icloud");
             eprintln!("{CODE_HELP}");
             bb_findmy::icloud::interactive_login(&icloud_dir, &apple_id, &password, ask)?;
             println!("Signed in to iCloud. Your Apple devices will now appear in Find My.");
-            if beacons {
-                if let Some(url) = &anisette_url {
-                    std::fs::write(dir.join("anisette_url"), url)?;
-                }
-                let provider = anisette_provider(&dir)?;
-                eprintln!("\nSigning in a second time for Offline Finding (locating this PC's beacon). This needs a new code.");
-                let auth = bb_findmy::gsa::login(&*provider, &apple_id, &password, ask)?;
-                bb_net::write_private(&icloud_dir.join("searchparty.json"), &serde_json::to_vec_pretty(&auth)?)?;
-                println!("Signed in to Offline Finding. Registered beacons will now be located.");
-            }
             Ok(())
         }
         Command::Run { bind, mock, mock_codes, name } => {
@@ -185,17 +167,6 @@ fn rpassword_prompt(prompt: &str) -> Result<String> {
     }
     result?;
     Ok(line.trim_end_matches(['\r', '\n']).to_string())
-}
-
-/// The anisette source: `anisette_url` in the data dir if set, else this Mac's own.
-pub fn anisette_provider(dir: &std::path::Path) -> Result<Box<dyn bb_findmy::anisette::Provider>> {
-    if let Ok(url) = std::fs::read_to_string(dir.join("anisette_url")) {
-        return Ok(Box::new(bb_findmy::anisette::Remote::new(url.trim())));
-    }
-    #[cfg(target_os = "macos")]
-    return Ok(Box::new(bb_mac::anisette::Native::new()?));
-    #[cfg(not(target_os = "macos"))]
-    bail!("no anisette source; pass --anisette-url (e.g. a self-hosted anisette-v3-server)")
 }
 
 #[cfg(target_os = "macos")]

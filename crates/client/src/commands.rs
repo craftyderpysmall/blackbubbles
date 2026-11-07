@@ -112,7 +112,6 @@ pub struct ConfigView {
     autofill: AutofillView,
     notifications: Notifications,
     services: Services,
-    beacon: Option<BeaconView>,
 }
 
 #[derive(Serialize)]
@@ -138,12 +137,6 @@ struct HttpView {
     token: String,
 }
 
-#[derive(Serialize)]
-struct BeaconView {
-    name: String,
-    keys: usize,
-}
-
 impl From<&Config> for ConfigView {
     fn from(c: &Config) -> Self {
         Self {
@@ -158,7 +151,6 @@ impl From<&Config> for ConfigView {
             },
             notifications: c.notifications.clone(),
             services: c.services,
-            beacon: c.beacon.as_ref().map(|b| BeaconView { name: b.name.clone(), keys: b.private_keys.len() }),
         }
     }
 }
@@ -204,7 +196,7 @@ pub fn bootstrap(state: State<'_, AppState>) -> Bootstrap {
 /// Any protocol request, as proto JSON (e.g. `{"ListChats":{"limit":300,"before":null}}`).
 #[tauri::command]
 pub async fn request(state: State<'_, AppState>, req: Request) -> Result<Response, ApiError> {
-    if matches!(req, Request::GetBlob { .. } | Request::SendAttachment { .. } | Request::RegisterBeacon { .. }) {
+    if matches!(req, Request::GetBlob { .. } | Request::SendAttachment { .. }) {
         return Err(ApiError::new(bb_proto::ErrorCode::BadRequest, "use the dedicated command"));
     }
     state.client().request(req).await
@@ -272,12 +264,6 @@ pub async fn pair(app: AppHandle, state: State<'_, AppState>, uri: String, name:
     let view = state.update(|c| c.server = Some(server))?;
     state.connect(&app);
     Ok(view)
-}
-
-#[tauri::command]
-pub async fn beacon_setup(state: State<'_, AppState>, name: String) -> Result<ConfigView, String> {
-    let beacon = crate::beacon::setup(&state.client(), name.trim()).await.map_err(|e| format!("{e:#}"))?;
-    state.update(|c| c.beacon = Some(beacon))
 }
 
 #[tauri::command]

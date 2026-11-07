@@ -7,7 +7,7 @@ BlackBubbles is a fast bridge from the owner's Apple world to **Linux and macOS*
 The owner chose **React + Vite + Tailwind 4 + shadcn-style components (Radix)** and to **delete the egui client**; both are done. The egui code is only in git history (commit `036d7b4`). Why Tauri: egui couldn't render colour emoji; the webview also gives real text selection, CSS-accurate Neutral styling and system font fallback.
 
 How it fits together:
-- **Rust side** (`crates/client`, binary `blackbubbles`): same CLI modes as before (`daemon`, `pair`, `beacon-setup`; no subcommand opens the window). `commands.rs` holds `AppState` and every Tauri command.
+- **Rust side** (`crates/client`, binary `blackbubbles`): CLI modes `daemon` and `pair`; no subcommand opens the window. Hidden `request '<proto json>'` sends one request to the paired Mac and prints the reply. **Use it to look at the owner's real data instead of guessing**, e.g. `blackbubbles request '"Diagnose"'` (structure/counts of Notes, Contacts, Voice Memos and bbd's Automation grants, from inside bbd) or `'"ListContacts"'`. `commands.rs` holds `AppState` and every Tauri command.
 - **Requests:** the frontend calls the `request` command with proto JSON (serde's externally tagged enums, e.g. `{"ListChats":{"limit":300,"before":null}}`; unit variants are bare strings like `"ListCalendars"`). Types are mirrored by hand in `ui/src/lib/bb.ts`; **keep them in sync with `crates/proto`**.
 - **Events:** server `Event`s are emitted as `server-event` and connection changes as `status`. `ui/src/lib/events.ts` applies them straight to the React Query cache, so nothing polls.
 - **Media:** the `bb://` scheme (`blob.rs`) serves `blob/<Kind>/<id>` from chunked `GetBlob` with a 160 MB LRU and a 24-request cap, and proxies OpenFreeMap (`map/<path>`: vector tiles, style, fonts, sprites) with a proper User-Agent and a disk cache (tiles 7 days, style JSON 1 day; stale copies serve offline). MapLibre's `transformRequest` rewrites `tiles.openfreemap.org` URLs to it. The frontend builds URLs with `convertFileSrc(path, "bb")`.
@@ -28,13 +28,14 @@ Possible next steps (ask first): a tray icon, a "new conversation" composer, typ
 - **Sending address:** the owner wants iMessages to go from their **phone number, not email**.
   - BlackBubbles replies from the address each chat already uses, and the Mac's Messages settings decide that address. The setup steps are in `docs/MAC_SETUP.md` and the Settings screen.
   - Each chat reports `my_address`; the UI shows it and flags email with the warning colour.
-- **Find My for the Linux PC:** a BLE Offline-Finding beacon (`bb-beacon`) whose location is shown on BlackBubbles' own map. Apple's Find My app can't list non-Apple hardware.
+- **No Find My beacon.** The BLE beacon for the Linux PC (and its GSA/anisette sign-in, key crypto and systemd unit) was removed on 2026-11-06 at the owner's request; it's in git history (before protocol 6). Find My shows Apple devices from iCloud only.
 - **Autofill:** a built-in port of [linuxautofill](https://github.com/craftyderpysmall/linuxautofill).
   - Sources: iMessage/SMS from the Mac, Gmail IMAP, and the iPhone Shortcut endpoint.
   - Desktops: Wayland, X11 and macOS.
   - Detection must stay a faithful port; `crates/autofill/tests/detect.rs` is the original suite, copied verbatim.
 - **Performance is a requirement:** never block the UI thread.
 - **Apple's SQLite stores** are opened with `util::open_readonly`. If a WAL database's `-shm` is gone (the app isn't running), a plain read-only open fails ("unable to open database file"; the owner hit this with Voice Memos). It then falls back to `immutable=1`, which is a snapshot, so callers must not cache that connection.
+- **AppleScript** runs through `util::osascript` with a 30 s timeout. A hang almost always means macOS is showing a permission prompt on the Mac's screen (Delete in Notes hung this way).
 - **Secrets** live in mode-600 files. The client config is refused if group/other can read it.
 
 ## Status
@@ -42,9 +43,7 @@ Possible next steps (ask first): a tray icon, a "new conversation" composer, typ
 As of 2026-11-06, the owner has a Mac but **hasn't been able to set it up yet**. Everything Mac-side compiles and passes tests in CI (`macos-latest`), but none of it has run against real data yet:
 - EventKit and PhotoKit
 - AppleScript sending and note edits
-- AOSKit anisette
-- iCloud and GSA sign-in for Find My. **Owner hit this:** the 2FA pop-up never arrived, and their iOS has no "Get Verification Code" option. `findmy-login` now offers `sms` at both code prompts. When Apple's reply lists no numbers, it uses phone id 1, as pypush does (iCloud: `PUT /appleauth/auth/verify/phone`; GSA: `PUT gsa.apple.com/auth/verify/phone/`), and texts automatically when Apple reports `noTrustedDevices`. Untested against Apple.
-- real BLE advertising (needs `sudo`)
+- iCloud sign-in for Find My: **works** (the owner sees their and family devices). **Owner hit this:** the 2FA pop-up never arrived, and their iOS has no "Get Verification Code" option. `findmy-login` offers `sms` at the code prompt (iCloud `PUT /appleauth/auth/verify/phone`, phone id 1 when the list doesn't parse).
 
 When the owner gets Mac access, follow `docs/MAC_SETUP.md` with them and fix what breaks. I'd expect Find My sign-in and the Calendar/Photos permission prompts to break first. Logs are in `~/Library/Logs/bbd.log`.
 
@@ -65,7 +64,6 @@ Verified on Linux against the mock server, **with the Tauri client** (2026-11-06
 
 Verified only with the old egui client; the Rust code is unchanged, but these haven't been re-clicked in the Tauri UI:
 - autofill over HTTP and server events, including clipboard restore on SIGTERM
-- beacon registration
 
 Not exercised yet:
 - the Mac's EventKit Reminders code (`crates/mac/src/reminders.rs`): type-checked for macOS, never run
@@ -81,15 +79,14 @@ Not exercised yet in the Tauri UI:
 ## Layout
 
 ```
-crates/proto     wire protocol: postcard frames, Backend trait (PROTOCOL_VERSION = 5: ListContacts, UnlockNote, DeleteNote)
+crates/proto     wire protocol: postcard frames, Backend trait (PROTOCOL_VERSION = 6: Diagnose, ListFindMyDevices{include_family}; beacon removed)
 crates/net       self-signed TLS + SHA-256 pinning, pairing URIs, framed WebSocket
 crates/server    bbd: pairing/devices, sessions, --mock backend (runs anywhere)
-crates/mac       macOS data: chat.db, NoteStore.sqlite, Voice Memos, EventKit, PhotoKit, AOSKit, Find My aggregation
-crates/findmy    Offline-Finding keys/advertisement/report crypto, Apple SRP, GSA + iCloud web auth, beacon registry
+crates/mac       macOS data: chat.db, NoteStore.sqlite (+ notecrypt), AddressBook, Voice Memos, EventKit, PhotoKit, Find My, diagnose
+crates/findmy    iCloud web sign-in (Apple SRP) and Find My devices
 crates/autofill  detect (port), IMAP (rustls), HTTP endpoint, Deliverer + per-desktop Platform
 crates/client    Tauri app `blackbubbles`: commands.rs (bridge), blob.rs (bb:// scheme), audio.rs, conn.rs, notify.rs, config.rs; tauri.conf.json, capabilities/, icons/
 ui/              React UI: src/lib (bb.ts bridge, events.ts, app.tsx context, format.ts), src/components (ui.tsx kit, Lightbox, Linkified), src/pages/*
-crates/beacon    bb-beacon: raw HCI LE advertising (legacy → extended fallback), key rotation
 packaging/       launchd agent + install script, .app script, systemd units, PKGBUILD
 docs/            MAC_SETUP.md, LINUX_SETUP.md
 ```
@@ -108,7 +105,7 @@ BLACKBUBBLES_CONFIG_DIR=/tmp/bbc cargo run -p bb-client --features custom-protoc
 
 - **custom-protocol:** without this feature, Tauri runs in dev mode and loads `http://localhost:5173`. For hot reload, run `npm run dev` in `ui/` and `cargo run -p bb-client`. Switching the feature on or off rebuilds the tauri crates, so pick one mode per session. Release builds and CI always use the feature.
 - **Bundles:** run `npm run tauri -- build --bundles deb|app` from `ui/`. The script `cd`s to the repo root, because that's where the CLI finds `crates/client/tauri.conf.json`. `packaging/macos/make-app.sh` wraps the `app` bundle.
-- **Mock server:** `--mock` serves fake chats, events, notes, memos and photos (generated BMP/WAV), plus Find My devices including a beacon. Writes echo events like the Mac does: a sent message comes back as `NewMessage` after 0.5 s, and note and calendar writes emit their `*Changed` events. `--mock-codes N` sends a fake verification-code text every N seconds.
+- **Mock server:** `--mock` serves fake chats, events, notes, memos and photos (generated BMP/WAV), plus Find My devices (a family member's iPhone appears only with include_family). Writes echo events like the Mac does: a sent message comes back as `NewMessage` after 0.5 s, and note and calendar writes emit their `*Changed` events. `--mock-codes N` sends a fake verification-code text every N seconds.
 - **Developer environment variables for the client:**
   - `BLACKBUBBLES_CONFIG_DIR`: use a scratch config.
   - `BLACKBUBBLES_TAB=<messages|photos|notes|calendar|voice|findmy|settings>`: the tab to open on.
@@ -158,7 +155,7 @@ Screens:
   - Drag-and-drop to send.
   - Header badges show the service and `my_address` (email flagged), plus a per-chat mute bell.
   - Group events ("You left the conversation", "Alex added Anthony", renames, group photo) are centred lines in the thread and the chat-list preview. chat.db `item_type` 1/2/3 + `group_action_type` → `Message.group_event` (protocol 4). Other item types (location sharing, FaceTime…) are skipped. The mock has a "Weekend trip" group with each kind.
-  - Contact names: `bbd` reads `~/Library/Application Support/AddressBook/{,Sources/*/}AddressBook-v22.abcddb` (Full Disk Access covers it) and answers `ListContacts` with handle → name for every handle in chat.db. Matching uses lowercase emails and the last 10 digits of phone numbers (`crates/mac/src/contacts.rs`). The UI's `useNames()` applies them to titles, avatars, sender labels and group events; the notifier too.
+  - Contact names (fixed 2026-11-06 from real data): the server used to send the chat number as `display_name` for one-on-one chats, which hid every contact name. `display_name` is now only a real group name; the UI's `groupName()` also ignores a name equal to a participant or `chat\d+`. `bbd` reads `~/Library/Application Support/AddressBook/{,Sources/*/}AddressBook-v22.abcddb` (Full Disk Access covers it) and answers `ListContacts` with handle → name for every handle in chat.db. Matching uses lowercase emails and the last 10 digits of phone numbers (`crates/mac/src/contacts.rs`). The UI's `useNames()` applies them to titles, avatars, sender labels and group events; the notifier too.
   - Save As…: `save_blob_as` opens a native dialog (tauri-plugin-dialog, Rust side, so no JS permission). Attachments have a right-click menu (Open, Save As…). The web view's own image menu is suppressed, because its "Save Image As…" can't save bb:// images.
   - Text selection app-wide is white with black text; inside white surfaces (your iMessage bubbles, `.bb-inverted`) it flips to black with white text.
 - **Photos:** album pills, lazy thumbnails with an LRU cache, video and favourite badges, lightbox with arrow keys and Save.
@@ -166,8 +163,8 @@ Screens:
 - **Calendar:** month grid with today as a pill, day agenda, delete. Reminders with a due date show on their day as hollow rings (events are dots) and in the agenda with a checkbox. The "New" dialog switches between Event (title, location, notes, all day, times, calendar) and Reminder (title, notes, date, optional time, list, priority).
 - **Reminders:** Today (includes overdue) / Scheduled (grouped by day) / All (grouped by list) / Completed tiles with counts, the owner's lists with colours, quick add (title + optional date/time), tick off (stays visible ~1 s), delete, "Show completed". Completed history is only fetched when shown. Timed reminders get an EventKit alarm so they also alert on the iPhone.
 - **Voice Memos:** search, play, seek, save; the player card's primary is play/pause.
-- **Find My:** full-bleed MapLibre vector map with OpenFreeMap's `dark` style (no API key; all requests go through the `bb://map/` cache proxy). The device list floats over the map as a translucent panel (hideable). Markers are round device-icon badges; the selected one is inverted with its name and an accuracy ring. A detail card shows last seen, accuracy, battery (coloured only when low), coordinates and "Open in OpenStreetMap". Refreshes every 60 s. CARTO's basemaps were tried and now need an API key; don't go back to inverting light OSM tiles (the owner found it forced).
-- **Settings:** sections for Connection/pairing, Sending address help, Services (which Apple services show; all on by default; a hidden service loses its tab and notifications), Notifications (all categories incl. Reminders due, quiet hours, mute list; groups dim when their service is hidden), Autofill (sources, silent mode, Shortcut token, Gmail), Find My for this PC (Linux), About.
+- **Find My:** Settings → Services → Find My → "Show family members' devices" (`find_my_family`, default on) sends `include_family` = iCloud's `fmly` flag; the server caches each variant separately. Full-bleed MapLibre vector map with OpenFreeMap's `dark` style (no API key; all requests go through the `bb://map/` cache proxy). The device list floats over the map as a translucent panel (hideable). Markers are round device-icon badges; the selected one is inverted with its name and an accuracy ring. A detail card shows last seen, accuracy, battery (coloured only when low), coordinates and "Open in OpenStreetMap". Refreshes every 60 s. CARTO's basemaps were tried and now need an API key; don't go back to inverting light OSM tiles (the owner found it forced).
+- **Settings:** sections for Connection/pairing, Sending address help, Services (which Apple services show; all on by default; a hidden service loses its tab and notifications), Notifications (all categories incl. Reminders due, quiet hours, mute list; groups dim when their service is hidden), Autofill (sources, silent mode, Shortcut token, Gmail), About.
 
 Behaviour:
 - **Toasts:** bottom-right cards.

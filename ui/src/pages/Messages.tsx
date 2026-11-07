@@ -16,8 +16,15 @@ import { Lightbox } from "@/components/Lightbox";
 const PAGE = 60;
 const ROW = 64;
 
-export const chatTitle = (chat: Chat, name: NameOf = (h) => h) =>
-  (chat.display_name?.trim() ? chat.display_name : chat.participants.map(name).join(", ")) || "Unknown";
+/** A real group name, or null. Older servers sent the number (or an internal `chat123…`
+ *  id) as the name, which hid contact names. */
+export function groupName(chat: Chat): string | null {
+  const n = chat.display_name?.trim();
+  if (!n || chat.participants.includes(n) || /^chat\d+$/.test(n)) return null;
+  return n;
+}
+
+export const chatTitle = (chat: Chat, name: NameOf = (h) => h) => groupName(chat) ?? (chat.participants.map(name).join(", ") || "Unknown");
 
 const isSms = (chat: Chat) => chat.service !== "IMessage";
 

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use bb_proto::{DeviceKind, Event, Message, Request, Response, Service};
+use bb_proto::{Event, Message, Request, Response, Service};
 
 use crate::config::{Notifications, Services};
 use crate::conn::{Client, Status};
@@ -165,12 +165,11 @@ impl Notifier {
         names.get(guid).cloned()
     }
 
-    /// Calendar reminders, Find My battery/beacon checks and connection health.
+    /// Calendar reminders, Find My battery checks and connection health.
     async fn poll_loop(self: Arc<Self>) {
         let mut reminded: HashSet<(String, i64)> = HashSet::new();
         let mut due_told: HashSet<(String, i64)> = HashSet::new();
         let mut low: HashSet<String> = HashSet::new();
-        let mut beacon_seen: HashMap<String, i64> = HashMap::new();
         let mut last_find_my = Instant::now() - Duration::from_secs(3600);
         let mut down_since: Option<Instant> = None;
         let mut told_down = false;
@@ -235,9 +234,9 @@ impl Notifier {
                 reminded.retain(|(_, start)| *start > now - 86_400_000);
             }
 
-            if on.find_my && (s.low_battery || s.beacon_located) && last_find_my.elapsed() > Duration::from_secs(600) {
+            if on.find_my && s.low_battery && last_find_my.elapsed() > Duration::from_secs(600) {
                 last_find_my = Instant::now();
-                if let Ok(Response::FindMyDevices(devices)) = self.client.request(Request::ListFindMyDevices).await {
+                if let Ok(Response::FindMyDevices(devices)) = self.client.request(Request::ListFindMyDevices { include_family: on.find_my_family }).await {
                     for device in devices {
                         if let Some(battery) = device.battery {
                             let percent = (battery * 100.0).round() as u8;
@@ -247,14 +246,6 @@ impl Notifier {
                                 }
                             } else {
                                 low.remove(&device.id);
-                            }
-                        }
-                        if device.kind == DeviceKind::Beacon
-                            && let Some(location) = device.location
-                        {
-                            let previous = beacon_seen.insert(device.id.clone(), location.at);
-                            if s.beacon_located && previous.is_some_and(|p| location.at > p) {
-                                send(&format!("{} was located", device.name), "A nearby Apple device reported its position.");
                             }
                         }
                     }

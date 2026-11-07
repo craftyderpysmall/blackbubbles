@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { AudioLines, Bell, Calendar, Check, Image, Info, Keyboard, LayoutGrid, Link2, ListChecks, Mail, MapPin, MessageCircle, NotebookPen, Phone, Plus, Radar, Trash2, type LucideIcon } from "lucide-react";
+import { AudioLines, Bell, Calendar, Check, Image, Info, Keyboard, LayoutGrid, Link2, ListChecks, Mail, MapPin, MessageCircle, NotebookPen, Phone, Plus, Trash2, type LucideIcon } from "lucide-react";
 import { errorText, native, type ConfigView, type Notifications, type Services } from "@/lib/bb";
 import { useApp } from "@/lib/app";
 import { cn } from "@/lib/utils";
@@ -69,7 +69,6 @@ export default function SettingsPage() {
         <ServiceSettings />
         <NotificationSettings />
         <AutofillSettings />
-        {boot.platform === "linux" && <BeaconSettings />}
         <Section icon={Info} title="About">
           <div className="selectable space-y-1 text-xs text-muted">
             <div>BlackBubbles {boot.version}</div>
@@ -172,7 +171,7 @@ const SERVICES: [keyof Services, LucideIcon, string, string][] = [
   ["calendar", Calendar, "Calendar", "Events (and reminders with a date, if Reminders is on)"],
   ["reminders", ListChecks, "Reminders", "The Reminders app's lists"],
   ["voice_memos", AudioLines, "Voice Memos", ""],
-  ["find_my", MapPin, "Find My", "Your devices and this PC"],
+  ["find_my", MapPin, "Find My", "Your Apple devices"],
 ];
 
 function ServiceSettings() {
@@ -187,6 +186,16 @@ function ServiceSettings() {
             <Icon className="size-4 shrink-0 text-muted" />
             <div className="min-w-0 flex-1">
               <Switch checked={v[key]} onChange={(on) => void save(native.saveServices({ ...v, [key]: on }))} label={name} description={hint || undefined} />
+              {key === "find_my" && (
+                <Nested disabled={!v.find_my}>
+                  <Switch
+                    checked={v.find_my_family}
+                    onChange={(on) => void save(native.saveServices({ ...v, find_my_family: on }))}
+                    label="Show family members' devices"
+                    description="Devices of people in your Family Sharing group"
+                  />
+                </Nested>
+              )}
             </div>
           </div>
         ))}
@@ -244,7 +253,6 @@ function NotificationSettings() {
           <Nested disabled={!n.low_battery}>
             <NumberField label="Below" suffix="%" value={n.low_battery_percent} min={5} max={50} onChange={(v) => set({ low_battery_percent: v })} />
           </Nested>
-          {sw("beacon_located", "This PC was located", "When nearby Apple devices report the beacon")}
         </Group>
         <Group title="Library">
           {sw("photos", "New photos", undefined, !on.photos)}
@@ -326,40 +334,6 @@ function AutofillSettings() {
         </div>
       </Group>
       <p className="mt-2 text-xs text-subtle">Source and endpoint changes apply after restarting BlackBubbles.</p>
-    </Section>
-  );
-}
-
-function BeaconSettings() {
-  const { boot, config, connected } = useApp();
-  const save = useSaver();
-  const [busy, setBusy] = useState(false);
-  const b = config.beacon;
-  const setup = async () => {
-    setBusy(true);
-    await save(native.beaconSetup(boot.device_name), "This PC is registered as a Find My beacon");
-    setBusy(false);
-  };
-  return (
-    <Section
-      icon={Radar}
-      title="Find My for this PC"
-      description="Broadcasts an Offline-Finding Bluetooth beacon so nearby Apple devices report where this PC is. It appears on the BlackBubbles map (Apple's own Find My app can't list non-Apple hardware)."
-    >
-      {b ? (
-        <div className="space-y-2">
-          <Badge dot="var(--color-success)">Registered as “{b.name}” · {b.keys} rotating keys</Badge>
-          <div className="text-xs text-muted">Start the advertiser (needs Bluetooth on):</div>
-          <Code>sudo systemctl enable --now blackbubbles-beacon@{boot.user || "$USER"}</Code>
-        </div>
-      ) : (
-        <div className="flex items-center gap-3">
-          <Button variant="primary" icon={Radar} busy={busy} disabled={!connected} onClick={setup}>
-            {busy ? "Registering…" : "Make this PC findable"}
-          </Button>
-          {!connected && <span className="text-xs text-subtle">Connect to your Mac first.</span>}
-        </div>
-      )}
     </Section>
   );
 }

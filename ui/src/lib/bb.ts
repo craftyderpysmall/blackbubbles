@@ -131,7 +131,6 @@ export interface Location {
 export interface FindMyDevice {
   id: string;
   name: string;
-  kind: "Apple" | "Beacon";
   location: Location | null;
   battery: number | null;
   model: string;
@@ -174,7 +173,6 @@ export interface Notifications {
   voice_memos: boolean;
   low_battery: boolean;
   low_battery_percent: number;
-  beacon_located: boolean;
   connection: boolean;
   quiet_hours: boolean;
   quiet_start: string;
@@ -190,6 +188,7 @@ export interface Services {
   reminders: boolean;
   voice_memos: boolean;
   find_my: boolean;
+  find_my_family: boolean;
 }
 
 export interface ConfigView {
@@ -204,7 +203,6 @@ export interface ConfigView {
   };
   notifications: Notifications;
   services: Services;
-  beacon: { name: string; keys: number } | null;
 }
 
 export interface Bootstrap {
@@ -289,13 +287,14 @@ export const api = {
   albums: () => call<Album[], "Albums">("ListAlbums", "Albums"),
   assets: (album_id: string | null, offset: number, limit: number) =>
     call<Asset[], "Assets">({ ListAssets: { album_id, offset, limit } }, "Assets"),
-  findMy: () => call<FindMyDevice[], "FindMyDevices">("ListFindMyDevices", "FindMyDevices"),
+  findMy: (include_family: boolean) => call<FindMyDevice[], "FindMyDevices">({ ListFindMyDevices: { include_family } }, "FindMyDevices"),
+  /** Structure/count facts about the Mac's databases (debugging). */
+  diagnose: () => call<string, "Diagnostics">("Diagnose", "Diagnostics"),
 };
 
 export const native = {
   bootstrap: () => invoke<Bootstrap>("bootstrap"),
   pair: (uri: string, name: string) => invoke<ConfigView>("pair", { uri, name }),
-  beaconSetup: (name: string) => invoke<ConfigView>("beacon_setup", { name }),
   saveNotifications: (notifications: Notifications) => invoke<ConfigView>("save_notifications", { notifications }),
   saveServices: (services: Services) => invoke<ConfigView>("save_services", { services }),
   saveAutofill: (options: { enabled: boolean; from_server: boolean; notify: boolean; clear_after: number }) =>

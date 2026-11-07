@@ -240,26 +240,27 @@ impl Session {
         self.save()
     }
 
-    fn refresh_client(&self) -> Result<Response> {
+    /// `fmly` is iCloud's switch for including Family Sharing members' devices.
+    fn refresh_client(&self, include_family: bool) -> Result<Response> {
         let url = self.state.findme_url.as_deref().context("no Find My URL")?;
         let dsid = self.state.dsid.as_deref().unwrap_or_default();
         Ok(self
             .http
             .post(format!("{url}/fmipservice/client/web/refreshClient?{BUILD}&clientId={}&dsid={dsid}", self.state.client_id))
             .header("Origin", "https://www.icloud.com")
-            .json(&json!({ "clientContext": { "fmly": true, "shouldLocate": true, "selectedDevice": "all", "deviceListVersion": 1 } }))
+            .json(&json!({ "clientContext": { "fmly": include_family, "shouldLocate": true, "selectedDevice": "all", "deviceListVersion": 1 } }))
             .send()?)
     }
 
-    /// All devices on the account (and Family Sharing members).
-    pub fn devices(&mut self) -> Result<Vec<Device>> {
+    /// Devices on the account, plus Family Sharing members' when `include_family`.
+    pub fn devices(&mut self, include_family: bool) -> Result<Vec<Device>> {
         if self.state.findme_url.is_none() {
             self.account_login()?;
         }
-        let mut reply = self.refresh_client()?;
+        let mut reply = self.refresh_client(include_family)?;
         if matches!(reply.status().as_u16(), 401 | 421 | 450) {
             self.account_login()?;
-            reply = self.refresh_client()?;
+            reply = self.refresh_client(include_family)?;
         }
         let data: Value = reply.error_for_status()?.json()?;
         Ok(parse_devices(&data))

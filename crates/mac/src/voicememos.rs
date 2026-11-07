@@ -26,6 +26,10 @@ impl VoiceMemos {
         Self { dir, cache }
     }
 
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// The recordings folder differs between macOS versions.
     pub fn default_dir() -> PathBuf {
         let home = util::home();

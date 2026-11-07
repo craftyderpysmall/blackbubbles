@@ -149,6 +149,10 @@ impl Notes {
         util::home().join("Library/Group Containers/group.com.apple.notes/NoteStore.sqlite")
     }
 
+    pub fn db_path(&self) -> &std::path::Path {
+        &self.db_path
+    }
+
     fn with_conn<T>(&self, f: impl FnOnce(&Connection, &Schema) -> Result<T, ApiError>) -> Result<T, ApiError> {
         let mut guard = self.conn.lock().unwrap();
         if guard.is_none() {

@@ -1,17 +1,9 @@
-//! Find My for BlackBubbles.
-//!
-//! - [`icloud`]: your Apple devices, via the iCloud web Find My API.
-//! - [`keys`], [`report`], [`gsa`], [`beacons`]: BLE Offline-Finding beacons (e.g. a Linux
-//!   PC), located by nearby Apple devices and decrypted here.
+//! Find My for BlackBubbles: your Apple devices (and optionally your family's), via the
+//! iCloud web Find My API ([`icloud`]), signed in with Apple's SRP ([`srp`]).
 //!
 //! Everything here talks to undocumented Apple endpoints and may break without notice.
 
-pub mod anisette;
-pub mod beacons;
-pub mod gsa;
 pub mod icloud;
-pub mod keys;
-pub mod report;
 pub mod srp;
 
 use std::path::Path;

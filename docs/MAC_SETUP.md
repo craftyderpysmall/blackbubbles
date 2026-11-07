@@ -7,7 +7,6 @@
 - **Messages:** sign in with your Apple ID. On your iPhone, go to Settings → Messages → **Text Message Forwarding** and enable this Mac, so SMS reach it too.
 - **Send from your phone number, not your email:** on the iPhone, go to Settings → Messages → Send & Receive and set *Start New Conversations From* to your number. On the Mac, go to Messages → Settings → iMessage, tick your number and set the same option. BlackBubbles always replies from the address a conversation already uses, and each chat header shows it (email is flagged in yellow). Start a new conversation to move a chat from email to your number.
 - **Photos:** enable iCloud Photos, or keep a local library.
-- **Find My:** turn it on for the Mac. This is needed for the beacon lookups.
 - **Sleep:** stop the Mac sleeping (System Settings → Energy → *Prevent automatic sleeping when the display is off*).
 
 ## 2. Install
@@ -56,12 +55,10 @@ Each string works once and expires after 10 minutes. To see or remove paired dev
 ## 5. Find My
 
 ```sh
-~/Applications/BlackBubbles/bbd findmy-login you@icloud.com --beacons
+~/Applications/BlackBubbles/bbd findmy-login you@icloud.com
 ```
 
-This asks for your Apple ID password and then for 2FA codes. **If no code pops up on your devices**, type `sms` at the prompt and press Enter: Apple texts the code to your phone number instead. The second sign-in (`--beacons`) works the same way. On some iOS versions you can also make a code yourself under Settings → your name → Sign-In & Security, if a **Get Verification Code** option is there. You may get **two** prompts: one for iCloud and one for the Offline-Finding service, which is used to locate your Linux PC. Your password is never stored; only session tokens are kept, in files with mode 600.
-
-`--beacons` uses the Mac's own anisette (device attestation) through AOSKit. If that fails on your macOS version, run a self-hosted [anisette-v3-server](https://github.com/Dadoum/anisette-v3-server) and pass `--anisette-url http://localhost:6969`.
+This asks for your Apple ID password and then for 2FA codes. **If no code pops up on your devices**, type `sms` at the prompt and press Enter: Apple texts the code to your phone number instead. On some iOS versions you can also make a code yourself under Settings → your name → Sign-In & Security, if a **Get Verification Code** option is there. Your password is never stored; only session tokens are kept, in files with mode 600.
 
 ## Troubleshooting
 

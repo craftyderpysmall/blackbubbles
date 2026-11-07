@@ -24,6 +24,6 @@ Next:
      (open "$HOME/Applications/BlackBubbles" in Finder and drag bbd in), then run:
        launchctl kickstart -k gui/$(id -u)/com.craftyderpysmall.bbd
   2. Pair a computer:   $BIN pair --host <this Mac's name or Tailscale IP>
-  3. Find My:           $BIN findmy-login you@icloud.com --beacons
+  3. Find My:           $BIN findmy-login you@icloud.com
 Logs: ~/Library/Logs/bbd.log
 MSG

@@ -16,8 +16,7 @@ sudo pacman -S --needed rust nodejs npm webkit2gtk-4.1 gtk3 libsoup3 noto-fonts-
 # Debian/Ubuntu: sudo apt install cargo nodejs npm libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev fonts-noto-color-emoji libdbus-1-dev libasound2-dev libxkbcommon-dev libwayland-dev wl-clipboard wtype
 (cd ui && npm ci && npm run build)
 cargo build --release -p bb-client --features custom-protocol   # embeds ui/dist
-cargo build --release -p bb-beacon
-sudo install -m755 target/release/blackbubbles target/release/bb-beacon /usr/bin/
+sudo install -m755 target/release/blackbubbles /usr/bin/
 ```
 
 The window is a Tauri app on the system WebKitGTK. Install a colour emoji font (Noto Color Emoji above): it renders every emoji sequence. A bundled subset is only a fallback, and it can't draw emoji written with a variation selector such as ✈️.
@@ -93,17 +92,3 @@ systemctl --user enable --now blackbubbles   # runs `blackbubbles daemon`
 Only one process autofills at a time: if the daemon is running, the window leaves autofill to it.
 
 **Click to paste** needs `wtype` (Hyprland, Sway, KDE) or `ydotool` with `ydotoold` running (GNOME). Without either, the code is still copied; you paste it yourself.
-
-## Make this PC findable
-
-1. BlackBubbles → Settings → **Make this PC findable**, or run `blackbubbles beacon-setup`. This generates 96 rotating keys, gives the private halves to your Mac, and writes the public halves to `~/.config/blackbubbles/beacon-public.json`.
-2. Start the advertiser. It needs Bluetooth on and raw HCI access, which the unit grants through capabilities rather than root:
-   ```sh
-   sudo systemctl enable --now blackbubbles-beacon@$USER
-   journalctl -u blackbubbles-beacon@$USER -f     # "advertising XX:XX:… (legacy|extended)"
-   ```
-3. Make sure the Mac has run `bbd findmy-login … --beacons`.
-
-Reports show up after an Apple device has been near the PC, usually within minutes in a populated area. The PC then appears as **This PC** in the Find My tab.
-
-To check what is being broadcast without root, run `bb-beacon show --keys ~/.config/blackbubbles/beacon-public.json`.

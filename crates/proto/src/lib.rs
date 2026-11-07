@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Milliseconds since the Unix epoch.
 pub type Timestamp = i64;
@@ -47,9 +47,8 @@ pub enum Request {
     DeleteEvent { id: String },
     CreateNote { folder_id: Option<String>, body: String },
     UpdateNote { id: String, body: String },
-    ListFindMyDevices,
-    /// Register a BLE Offline-Finding beacon. `private_keys` are 28-byte P-224 scalars.
-    RegisterBeacon { id: String, name: String, private_keys: Vec<Vec<u8>> },
+    /// `include_family`: also your Family Sharing members' devices.
+    ListFindMyDevices { include_family: bool },
     /// Read part of a binary object (attachment, photo, recording).
     GetBlob { kind: BlobKind, id: String, offset: u64, len: u32 },
     ListReminderLists,
@@ -64,6 +63,8 @@ pub enum Request {
     UnlockNote { id: String, password: String },
     /// Move a note to Recently Deleted.
     DeleteNote { id: String },
+    /// Structure/count facts about the Mac's Apple databases, for debugging.
+    Diagnose,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -134,6 +135,7 @@ pub enum Response {
     Reminders(Vec<Reminder>),
     Reminder(Reminder),
     Contacts(Vec<ContactName>),
+    Diagnostics(String),
 }
 
 /// A chat handle (exactly as in `Chat.participants` / `Message.sender`) and its contact name.
@@ -350,18 +352,10 @@ pub struct Asset {
 pub struct FindMyDevice {
     pub id: String,
     pub name: String,
-    pub kind: DeviceKind,
     pub location: Option<Location>,
     pub battery: Option<f32>,
-    /// e.g. "iPhone 16 Pro", "MacBook Air", "BLE beacon".
+    /// e.g. "iPhone 16 Pro", "MacBook Air".
     pub model: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DeviceKind {
-    Apple,
-    /// A BlackBubbles BLE Offline-Finding beacon (e.g. this Linux PC).
-    Beacon,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

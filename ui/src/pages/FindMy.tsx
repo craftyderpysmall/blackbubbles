@@ -8,19 +8,18 @@ import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
-  ArrowLeft, BatteryFull, BatteryLow, BatteryMedium, ExternalLink, Headphones, Laptop, List, LocateFixed, MapPin, Minus, Plus, Radar, RotateCw, Smartphone, Tablet, Watch, X, type LucideIcon,
+  ArrowLeft, BatteryFull, BatteryLow, BatteryMedium, ExternalLink, Headphones, Laptop, List, LocateFixed, MapPin, Minus, Plus, RotateCw, Smartphone, Tablet, Watch, X, type LucideIcon,
 } from "lucide-react";
 import { api, errorText, type FindMyDevice } from "@/lib/bb";
 import { keys } from "@/lib/events";
 import { NARROW_BELOW, useApp, useWidth } from "@/lib/app";
 import { ago, longTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { Badge, Button, Card, Center, EmptyState, IconButton, Spinner } from "@/components/ui";
+import { Button, Card, Center, EmptyState, IconButton, Spinner } from "@/components/ui";
 
 const REFRESH_MS = 60_000;
 
 function deviceIcon(d: FindMyDevice): LucideIcon {
-  if (d.kind === "Beacon") return Radar;
   const m = `${d.model} ${d.name}`.toLowerCase();
   if (m.includes("mac")) return Laptop;
   if (m.includes("ipad")) return Tablet;
@@ -33,11 +32,12 @@ function deviceIcon(d: FindMyDevice): LucideIcon {
 const glass = "border border-border bg-surface/85 shadow-soft backdrop-blur-xl";
 
 export default function FindMyPage() {
-  const { connected } = useApp();
+  const { connected, config } = useApp();
+  const family = config.services.find_my_family;
   const [ref, width] = useWidth<HTMLDivElement>();
   const [selected, setSelected] = useState<string | null>(null);
   const [listOpen, setListOpen] = useState(true);
-  const devices = useQuery({ queryKey: keys.findMy, queryFn: api.findMy, enabled: connected, refetchInterval: REFRESH_MS });
+  const devices = useQuery({ queryKey: [...keys.findMy, family], queryFn: () => api.findMy(family), enabled: connected, refetchInterval: REFRESH_MS });
   const list = useMemo(() => devices.data ?? [], [devices.data]);
   const narrow = width > 0 && width < NARROW_BELOW;
   const device = list.find((d) => d.id === selected) ?? null;
@@ -129,7 +129,6 @@ function DeviceList(props: {
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-2">
                     <span className="truncate text-[13px] font-medium text-fg">{d.name}</span>
-                    {d.kind === "Beacon" && <Badge className="h-5 px-2 text-[10.5px]">beacon</Badge>}
                   </span>
                   <span className="block truncate text-xs text-subtle">{d.location ? ago(d.location.at) : "No location yet"}</span>
                 </span>

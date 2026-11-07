@@ -109,13 +109,49 @@ pub fn read_blob(path: &Path, offset: u64, len: u32, mime: Option<String>) -> Re
 }
 
 /// Run an AppleScript with arguments passed as `argv` (never interpolated into the source).
+/// How long an AppleScript may run. Longer almost always means macOS is showing a prompt
+/// on the Mac's screen (e.g. "bbd wants to control Notes") that nobody can see from here.
+const OSASCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub fn osascript(script: &str, args: &[&str]) -> Result<String, ApiError> {
-    let output = std::process::Command::new("/usr/bin/osascript")
-        .arg("-e")
-        .arg(script)
-        .args(args)
-        .output()
-        .map_err(|e| ApiError::internal(format!("osascript: {e}")))?;
+    run_with_timeout(
+        std::process::Command::new("/usr/bin/osascript").arg("-e").arg(script).args(args),
+        OSASCRIPT_TIMEOUT,
+    )
+    .map_err(|e| match e {
+        RunError::TimedOut => ApiError::internal(
+            "The Mac didn't answer within 30 seconds. macOS is probably asking for permission on the Mac's screen \
+             (\"bbd wants to control …\"): click OK there, or allow it in System Settings → Privacy & Security → Automation → bbd.",
+        ),
+        RunError::Io(e) => ApiError::internal(format!("osascript: {e}")),
+    })
+    .and_then(|output| osascript_result(&output))
+}
+
+pub(crate) enum RunError {
+    TimedOut,
+    Io(std::io::Error),
+}
+
+/// Run a command, killing it if it outlives `timeout`.
+pub(crate) fn run_with_timeout(cmd: &mut std::process::Command, timeout: std::time::Duration) -> Result<std::process::Output, RunError> {
+    use std::process::Stdio;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(RunError::Io)?;
+    let start = std::time::Instant::now();
+    loop {
+        if child.try_wait().map_err(RunError::Io)?.is_some() {
+            return child.wait_with_output().map_err(RunError::Io);
+        }
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(RunError::TimedOut);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+fn osascript_result(output: &std::process::Output) -> Result<String, ApiError> {
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
@@ -151,6 +187,14 @@ pub fn escape_html(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn commands_time_out() {
+        let slow = super::run_with_timeout(std::process::Command::new("sleep").arg("5"), std::time::Duration::from_millis(300));
+        assert!(matches!(slow, Err(super::RunError::TimedOut)));
+        let fast = super::run_with_timeout(std::process::Command::new("echo").arg("hi"), std::time::Duration::from_secs(5));
+        assert_eq!(String::from_utf8_lossy(&fast.ok().unwrap().stdout).trim(), "hi");
+    }
+
     #[test]
     fn opens_wal_database_without_shm() {
         let dir = std::env::temp_dir().join(format!("bb util wal {}", std::process::id()));

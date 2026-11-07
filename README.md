@@ -16,7 +16,7 @@ It is not based on BlueBubbles. BlackBubbles has its own server, protocol and cl
 | **Calendar** | Month grid, agenda, create and delete events; reminders with a date show on their day | EventKit |
 | **Reminders** | Today / Scheduled / All / Completed, your lists, add, tick off, delete; timed reminders alert on your iPhone too | EventKit (the Reminders app's store) |
 | **Voice Memos** | List, play, seek, save | Recordings database and audio files |
-| **Find My** | Your Apple devices on a map, plus this Linux PC | iCloud Find My, and Offline-Finding reports for the beacon |
+| **Find My** | Your Apple devices on a map, optionally with your family's | iCloud Find My |
 | **Autofill** | Verification codes and links go straight to your clipboard | Built-in [linuxautofill](https://github.com/craftyderpysmall/linuxautofill), see below |
 
 ### Services
@@ -27,7 +27,7 @@ Settings → Services chooses which of Messages, Photos, Notes, Calendar, Remind
 
 Settings → Notifications decides exactly what reaches your desktop:
 - **Messages:** iMessage and SMS separately, with or without the sender and a preview. You can skip code-only texts (autofill already shows those), stay quiet while the window is focused, and mute single conversations from their header.
-- **Other alerts:** calendar reminders N minutes before an event, Reminders when they're due, low battery on any Find My device, this PC's beacon being located, new photos, notes or voice memos, and the Mac connection dropping or coming back.
+- **Other alerts:** calendar reminders N minutes before an event, Reminders when they're due, low battery on any Find My device, new photos, notes or voice memos, and the Mac connection dropping or coming back.
 - **Quiet hours:** for example 22:00–07:00.
 
 Notifications come from whichever BlackBubbles process owns autofill (the background daemon if it runs, otherwise the window). The daemon picks up setting changes live.
@@ -50,16 +50,6 @@ Codes come from three places:
 | X11 | native | XTest | freedesktop, with actions |
 | macOS | NSPasteboard | the code stays on the clipboard; press ⌘V | Notification Center |
 
-### Find My for a Linux PC
-
-Apple's Find My app only lists Apple hardware. BlackBubbles gets as close as it can:
-- The Linux PC broadcasts an **Offline-Finding Bluetooth beacon**, the same protocol AirTags use, with keys that rotate every 15 minutes.
-- Nearby iPhones, iPads and Macs encrypt their location to the beacon's key and upload it to Apple. This works even when the PC is offline or asleep with Bluetooth on.
-- Your Mac fetches those reports and decrypts them.
-- The PC then appears as **"This PC"** on the BlackBubbles map next to your Apple devices.
-
-Only public keys reach the beacon service. Private keys live on your client and your Mac.
-
 ## Design
 
 The UI follows the "Neutral" desktop theme:
@@ -76,11 +66,10 @@ crates/proto     wire protocol (postcard over WebSocket)
 crates/net       pinned self-signed TLS, pairing strings
 crates/server    bbd, the daemon on your Mac (--mock runs anywhere)
 crates/mac       macOS data access: chat.db, NoteStore, Voice Memos, EventKit, PhotoKit, AOSKit
-crates/findmy    Offline-Finding crypto, Apple SRP, iCloud and GSA auth
+crates/findmy    iCloud Find My sign-in (Apple SRP) and device locations
 crates/autofill  linuxautofill port: detection, IMAP, HTTP, per-desktop delivery
-crates/client    the Tauri app's Rust side (blackbubbles: window, daemon, pair, beacon-setup)
+crates/client    the Tauri app's Rust side (blackbubbles: window, daemon, pair)
 ui/              the React + Tailwind UI (Vite)
-crates/beacon    bb-beacon, the Linux BLE advertiser
 packaging/       launchd agent, .app bundling, systemd units, PKGBUILD
 ```
 

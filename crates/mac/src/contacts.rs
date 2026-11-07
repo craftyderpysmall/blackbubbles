@@ -46,7 +46,7 @@ impl Contacts {
         util::home().join("Library/Application Support/AddressBook")
     }
 
-    fn databases(&self) -> Vec<PathBuf> {
+    pub(crate) fn databases(&self) -> Vec<PathBuf> {
         let mut dbs = vec![self.root.join("AddressBook-v22.abcddb")];
         if let Ok(sources) = std::fs::read_dir(self.root.join("Sources")) {
             dbs.extend(sources.flatten().map(|s| s.path().join("AddressBook-v22.abcddb")));
