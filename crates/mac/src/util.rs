@@ -160,8 +160,12 @@ mod tests {
         {
             let conn = rusqlite::Connection::open(&db).unwrap();
             conn.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE t (x); INSERT INTO t VALUES (42);").unwrap();
-        } // closing removes -wal and -shm, like an app quitting
-        assert!(!dir.join("Cloud Recordings.db-shm").exists());
+        }
+        // The state after the owning app quits: no side files. (SQLite removes them on
+        // close on Linux; Apple's SQLite may keep them, so remove them explicitly.)
+        for side in ["Cloud Recordings.db-wal", "Cloud Recordings.db-shm"] {
+            let _ = std::fs::remove_file(dir.join(side));
+        }
         // Make the folder read-only so SQLite can't create -shm (as for a read-only open).
         let mut perms = std::fs::metadata(&dir).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o555);
