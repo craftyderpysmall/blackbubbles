@@ -42,7 +42,7 @@ As of 2026-11-06, the owner has a Mac but **hasn't been able to set it up yet**.
 - EventKit and PhotoKit
 - AppleScript sending and note edits
 - AOSKit anisette
-- iCloud and GSA sign-in for Find My
+- iCloud and GSA sign-in for Find My. **Owner hit this:** the 2FA pop-up never arrived, and their iOS has no "Get Verification Code" option. `findmy-login` now offers `sms` at both code prompts (iCloud: `PUT /appleauth/auth/verify/phone`; GSA: `PUT gsa.apple.com/auth/verify/phone/`), and texts automatically when Apple reports `noTrustedDevices`. Untested against Apple.
 - real BLE advertising (needs `sudo`)
 
 When the owner gets Mac access, follow `docs/MAC_SETUP.md` with them and fix what breaks. I'd expect Find My sign-in and the Calendar/Photos permission prompts to break first. Logs are in `~/Library/Logs/bbd.log`.
@@ -80,7 +80,7 @@ Not exercised yet in the Tauri UI:
 ## Layout
 
 ```
-crates/proto     wire protocol: postcard frames, Backend trait (PROTOCOL_VERSION = 3)
+crates/proto     wire protocol: postcard frames, Backend trait (PROTOCOL_VERSION = 4)
 crates/net       self-signed TLS + SHA-256 pinning, pairing URIs, framed WebSocket
 crates/server    bbd: pairing/devices, sessions, --mock backend (runs anywhere)
 crates/mac       macOS data: chat.db, NoteStore.sqlite, Voice Memos, EventKit, PhotoKit, AOSKit, Find My aggregation
@@ -156,6 +156,8 @@ Screens:
   - "Load earlier", images inline, other files download.
   - Drag-and-drop to send.
   - Header badges show the service and `my_address` (email flagged), plus a per-chat mute bell.
+  - Group events ("You left the conversation", "Alex added Anthony", renames, group photo) are centred lines in the thread and the chat-list preview. chat.db `item_type` 1/2/3 + `group_action_type` → `Message.group_event` (protocol 4). Other item types (location sharing, FaceTime…) are skipped. The mock has a "Weekend trip" group with each kind.
+  - Text selection app-wide is white with black text; inside white surfaces (your iMessage bubbles, `.bb-inverted`) it flips to black with white text.
 - **Photos:** album pills, lazy thumbnails with an LRU cache, video and favourite badges, lightbox with arrow keys and Save.
 - **Notes:** folder chips, search, plain-text editor (first line is the title), Ctrl/⌘+S, "Edited/Saved" badge, New note. Locked (password-protected) notes show a lock and a read-only panel; their bodies are encrypted with the owner's Notes password, so `bbd` never decrypts them and refuses `UpdateNote` on them (`NoteSummary.locked`).
 - **Calendar:** month grid with today as a pill, day agenda, delete. Reminders with a due date show on their day as hollow rings (events are dots) and in the agenda with a checkbox. The "New" dialog switches between Event (title, location, notes, all day, times, calendar) and Reminder (title, notes, date, optional time, list, priority).

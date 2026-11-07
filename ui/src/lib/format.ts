@@ -1,4 +1,4 @@
-import type { Timestamp } from "./bb";
+import type { Message, Timestamp } from "./bb";
 
 const sameDay = (a: Date, b: Date) =>
   a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
@@ -63,3 +63,16 @@ export function bytes(n: number): string {
 }
 
 export { sameDay };
+
+/** "You left the conversation", "Alex added Anthony", "Sam named the conversation “Trip”". */
+export function groupEventText(m: Pick<Message, "group_event" | "is_from_me" | "sender">): string | null {
+  const e = m.group_event;
+  if (!e) return null;
+  const actor = m.is_from_me ? "You" : m.sender || "Someone";
+  if (e === "Left") return `${actor} left the conversation`;
+  if (e === "PhotoChanged") return `${actor} changed the group photo`;
+  if (e === "PhotoRemoved") return `${actor} removed the group photo`;
+  if ("Added" in e) return e.Added.who ? `${actor} added ${e.Added.who}` : `${actor} added someone`;
+  if ("Removed" in e) return e.Removed.who ? `${actor} removed ${e.Removed.who}` : `${actor} removed someone`;
+  return e.Renamed.name ? `${actor} named the conversation “${e.Renamed.name}”` : `${actor} removed the conversation name`;
+}

@@ -122,7 +122,7 @@ impl Notifier {
     }
 
     fn on_message(self: &Arc<Self>, s: &Notifications, message: &Message) {
-        if message.is_from_me || !s.messages || s.muted_chats.contains(&message.chat_guid) {
+        if message.is_from_me || message.group_event.is_some() || !s.messages || s.muted_chats.contains(&message.chat_guid) {
             return;
         }
         if s.only_when_unfocused && self.focused.load(Ordering::Relaxed) {

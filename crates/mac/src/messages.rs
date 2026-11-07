@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use bb_proto::{ApiError, Attachment, Chat, Event, EventSink, Message, Response, Service, Timestamp};
+use bb_proto::{ApiError, Attachment, Chat, Event, EventSink, GroupEvent, Message, Response, Service, Timestamp};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::typedstream;
@@ -24,7 +24,25 @@ fn service(name: Option<&str>) -> Service {
     }
 }
 
-const MESSAGE_COLUMNS: &str = "m.ROWID, m.guid, m.text, m.attributedBody, m.is_from_me, m.date, h.id, m.service, cmj.chat_id";
+const MESSAGE_COLUMNS: &str = "m.ROWID, m.guid, m.text, m.attributedBody, m.is_from_me, m.date, h.id, m.service, cmj.chat_id, \
+    IFNULL(m.item_type, 0), IFNULL(m.group_action_type, 0), (SELECT oh.id FROM handle oh WHERE oh.ROWID = m.other_handle), m.group_title";
+
+/// Rows worth showing: ordinary messages and the group events we can describe. Other
+/// non-zero item types (location sharing, FaceTime, "kept" audio…) carry no text.
+const SHOWN: &str = "m.associated_message_type = 0 AND (IFNULL(m.item_type, 0) = 0 OR m.item_type IN (1, 2, 3))";
+
+/// Decode a group event from `item_type` / `group_action_type` (as Messages stores them).
+pub(crate) fn group_event(item_type: i64, action: i64, other: Option<String>, title: Option<String>) -> Option<GroupEvent> {
+    match (item_type, action) {
+        (1, 0) => Some(GroupEvent::Added { who: other }),
+        (1, 1) => Some(GroupEvent::Removed { who: other }),
+        (2, _) => Some(GroupEvent::Renamed { name: title.filter(|t| !t.is_empty()) }),
+        (3, 0) => Some(GroupEvent::Left),
+        (3, 1) => Some(GroupEvent::PhotoChanged),
+        (3, 2) => Some(GroupEvent::PhotoRemoved),
+        _ => None,
+    }
+}
 
 impl Messages {
     pub fn new(db_path: PathBuf, cache: PathBuf) -> Self {
@@ -56,6 +74,8 @@ impl Messages {
             .or_else(|| body.as_deref().and_then(typedstream::extract_text).and_then(|t| typedstream::clean(&t)));
         let is_from_me: bool = row.get::<_, i64>(4)? != 0;
         let chat_rowid: i64 = row.get(8)?;
+        let event = group_event(row.get(9)?, row.get(10)?, row.get(11)?, row.get(12)?);
+        let text = if event.is_some() { None } else { text };
         let message = Message {
             guid: row.get(1)?,
             chat_guid: Self::chat_guid(conn, chat_rowid)?,
@@ -64,6 +84,7 @@ impl Messages {
             text,
             date: apple_nanos_to_unix_ms(row.get(5)?),
             attachments: Self::attachments(conn, rowid)?,
+            group_event: event,
         };
         Ok((rowid, message, service(row.get::<_, Option<String>>(7)?.as_deref())))
     }
@@ -130,7 +151,7 @@ impl Messages {
                     .prepare_cached(&format!(
                         "SELECT {MESSAGE_COLUMNS} FROM chat_message_join cmj JOIN message m ON m.ROWID = cmj.message_id
                          LEFT JOIN handle h ON h.ROWID = m.handle_id
-                         WHERE cmj.chat_id = ?1 AND m.associated_message_type = 0 ORDER BY m.date DESC LIMIT 1"
+                         WHERE cmj.chat_id = ?1 AND {SHOWN} ORDER BY m.date DESC LIMIT 1"
                     ))
                     .map_err(sql_err)?
                     .query_row([rowid], |r| Self::row_to_message(conn, r))
@@ -151,7 +172,7 @@ impl Messages {
                 .prepare_cached(&format!(
                     "SELECT {MESSAGE_COLUMNS} FROM chat c JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
                      JOIN message m ON m.ROWID = cmj.message_id LEFT JOIN handle h ON h.ROWID = m.handle_id
-                     WHERE c.guid = ?1 AND (?2 IS NULL OR m.date < ?2) AND m.associated_message_type = 0
+                     WHERE c.guid = ?1 AND (?2 IS NULL OR m.date < ?2) AND {SHOWN}
                      ORDER BY m.date DESC LIMIT ?3"
                 ))
                 .map_err(sql_err)?;
@@ -247,7 +268,7 @@ impl Messages {
                         .prepare_cached(&format!(
                             "SELECT {MESSAGE_COLUMNS} FROM message m JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
                              LEFT JOIN handle h ON h.ROWID = m.handle_id
-                             WHERE m.ROWID > ?1 AND m.associated_message_type = 0 ORDER BY m.ROWID"
+                             WHERE m.ROWID > ?1 AND {SHOWN} ORDER BY m.ROWID"
                         ))
                         .map_err(sql_err)?;
                     let rows: Vec<(i64, Message, Service)> =
@@ -300,9 +321,56 @@ pub(crate) mod tests {
              INSERT INTO message VALUES (4, 'g4', 'Your code is 482913', NULL, 0, 700000003000000000, 2, 'SMS', 0);
              INSERT INTO chat_message_join VALUES (1, 1), (1, 2), (1, 3), (2, 4);
              INSERT INTO attachment VALUES (1, 'a1', '~/x.jpg', 'image/jpeg', 'x.jpg', 1234);
-             INSERT INTO message_attachment_join VALUES (2, 1);",
+             INSERT INTO message_attachment_join VALUES (2, 1);
+             ALTER TABLE message ADD COLUMN item_type INTEGER DEFAULT 0;
+             ALTER TABLE message ADD COLUMN group_action_type INTEGER DEFAULT 0;
+             ALTER TABLE message ADD COLUMN other_handle INTEGER DEFAULT 0;
+             ALTER TABLE message ADD COLUMN group_title TEXT;",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn group_events() {
+        let dir = std::env::temp_dir().join(format!("bbmac-msg3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("chat.db");
+        let _ = std::fs::remove_file(&db);
+        fixture(&db);
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "INSERT INTO chat VALUES (3, 'iMessage;+;chat99', 'Trip', 'chat99', 'iMessage', 'P:+15559999');
+             INSERT INTO handle VALUES (3, '+15550003');
+             INSERT INTO chat_handle_join VALUES (3, 1), (3, 3);
+             INSERT INTO message (ROWID, guid, text, is_from_me, date, handle_id, service, item_type, group_action_type, other_handle, group_title) VALUES
+               (10, 'e1', NULL, 1, 700000010000000000, 0, 'iMessage', 2, 0, 0, 'Weekend trip'),
+               (11, 'e2', NULL, 1, 700000011000000000, 0, 'iMessage', 1, 0, 3, NULL),
+               (12, 'e3', NULL, 0, 700000012000000000, 1, 'iMessage', 3, 0, 0, NULL),
+               (13, 'e4', NULL, 0, 700000013000000000, 3, 'iMessage', 4, 0, 0, NULL),
+               (14, 'e5', 'hey all', 0, 700000014000000000, 3, 'iMessage', 0, 0, 0, NULL),
+               (15, 'e6', NULL, 1, 700000015000000000, 0, 'iMessage', 3, 0, 0, NULL);
+             INSERT INTO chat_message_join VALUES (3, 10), (3, 11), (3, 12), (3, 13), (3, 14), (3, 15);",
+        )
+        .unwrap();
+        drop(conn);
+        let messages = Messages::new(db, dir.clone());
+        let Response::Messages(list) = messages.list_messages("iMessage;+;chat99", 20, None).unwrap() else { panic!() };
+        let events: Vec<_> = list.iter().map(|m| (m.guid.as_str(), m.is_from_me, m.sender.as_deref(), m.group_event.clone())).collect();
+        assert_eq!(
+            events,
+            [
+                ("e1", true, None, Some(GroupEvent::Renamed { name: Some("Weekend trip".into()) })),
+                ("e2", true, None, Some(GroupEvent::Added { who: Some("+15550003".into()) })),
+                ("e3", false, Some("+15550001"), Some(GroupEvent::Left)),
+                // e4 (item_type 4, location sharing) has nothing to show and is skipped.
+                ("e5", false, Some("+15550003"), None),
+                ("e6", true, None, Some(GroupEvent::Left)),
+            ]
+        );
+        assert_eq!(group_event(3, 1, None, None), Some(GroupEvent::PhotoChanged));
+        assert_eq!(group_event(1, 1, Some("x".into()), None), Some(GroupEvent::Removed { who: Some("x".into()) }));
+        assert_eq!(group_event(6, 0, None, None), None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

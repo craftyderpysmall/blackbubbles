@@ -59,7 +59,7 @@ Each string works once and expires after 10 minutes. To see or remove paired dev
 ~/Applications/BlackBubbles/bbd findmy-login you@icloud.com --beacons
 ```
 
-This asks for your Apple ID password and then for 2FA codes. **If no code pops up on your devices**, make one yourself and type it in: on your iPhone, go to Settings → your name → Sign-In & Security → Two-Factor Authentication → **Get Verification Code** (on a Mac it's the same path in System Settings). You can also type `sms` at the first prompt to get the code by text. You may get **two** prompts: one for iCloud and one for the Offline-Finding service, which is used to locate your Linux PC. Your password is never stored; only session tokens are kept, in files with mode 600.
+This asks for your Apple ID password and then for 2FA codes. **If no code pops up on your devices**, type `sms` at the prompt and press Enter: Apple texts the code to your phone number instead. The second sign-in (`--beacons`) works the same way. On some iOS versions you can also make a code yourself under Settings → your name → Sign-In & Security, if a **Get Verification Code** option is there. You may get **two** prompts: one for iCloud and one for the Offline-Finding service, which is used to locate your Linux PC. Your password is never stored; only session tokens are kept, in files with mode 600.
 
 `--beacons` uses the Mac's own anisette (device attestation) through AOSKit. If that fails on your macOS version, run a self-hosted [anisette-v3-server](https://github.com/Dadoum/anisette-v3-server) and pass `--anisette-url http://localhost:6969`.
 
@@ -69,5 +69,5 @@ This asks for your Apple ID password and then for 2FA codes. **If no code pops u
 - **"cannot open … chat.db":** Full Disk Access is missing, or was granted before the binary changed. Remove `bbd` from the list, add it again, then kickstart.
 - **Messages not sending:** check System Settings → Privacy & Security → Automation → bbd → Messages.
 - **Find My "session expired":** run `findmy-login` again.
-- **`findmy-login` waits for a code that never arrives:** use **Get Verification Code** on your iPhone or Mac (see step 5), or type `sms`.
+- **`findmy-login` waits for a code that never arrives:** type `sms` at the prompt to get it by text (see step 5).
 - **Linux says "failed to lookup address information" for `….local`:** the Linux PC can't resolve `.local` names yet. See [LINUX_SETUP.md → Let Linux find the Mac by name](LINUX_SETUP.md#let-linux-find-the-mac-by-name).

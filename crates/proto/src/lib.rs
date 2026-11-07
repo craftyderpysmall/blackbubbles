@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Milliseconds since the Unix epoch.
 pub type Timestamp = i64;
@@ -209,6 +209,24 @@ pub struct Message {
     pub text: Option<String>,
     pub date: Timestamp,
     pub attachments: Vec<Attachment>,
+    /// A group-chat event shown as a line in the thread ("Anthony left the conversation").
+    /// Its actor is `sender` (or you, when `is_from_me`).
+    pub group_event: Option<GroupEvent>,
+}
+
+/// chat.db rows with a non-zero `item_type`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum GroupEvent {
+    /// The actor added `who` (a handle).
+    Added { who: Option<String> },
+    /// The actor removed `who`.
+    Removed { who: Option<String> },
+    /// The actor left the conversation.
+    Left,
+    /// The actor named the conversation (`None`: removed the name).
+    Renamed { name: Option<String> },
+    PhotoChanged,
+    PhotoRemoved,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

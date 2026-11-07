@@ -163,7 +163,8 @@ impl Session {
 
     /// Ask Apple for the 2FA state. This is what makes it push a code to trusted devices;
     /// the reply also lists the trusted phone numbers for the SMS fallback.
-    fn request_push(&mut self) -> Result<Vec<TrustedPhone>> {
+    /// Also says whether the account has no device that can show a code (then only SMS works).
+    fn request_push(&mut self) -> Result<(Vec<TrustedPhone>, bool)> {
         let reply = self.auth_request(self.http.get(AUTH)).send().context("asking Apple to send the code")?;
         self.absorb_headers(&reply);
         let status = reply.status();
@@ -171,7 +172,8 @@ impl Session {
         if !status.is_success() {
             bail!("Apple didn't send a code (HTTP {status}): {body}");
         }
-        Ok(trusted_phones(&body))
+        let no_devices = body.get("noTrustedDevices").and_then(Value::as_bool).unwrap_or(false);
+        Ok((trusted_phones(&body), no_devices))
     }
 
     fn send_sms(&mut self, phone: &TrustedPhone) -> Result<()> {
@@ -313,14 +315,19 @@ fn trusted_phones(auth: &Value) -> Vec<TrustedPhone> {
 pub fn interactive_login(dir: &Path, apple_id: &str, password: &str, mut ask: impl FnMut(&str) -> Result<String>) -> Result<()> {
     let mut session = Session::open(dir)?;
     if session.sign_in(apple_id, password)? {
-        let phones = match session.request_push() {
-            Ok(phones) => phones,
+        let (phones, no_devices) = match session.request_push() {
+            Ok(found) => found,
             Err(err) => {
                 eprintln!("warning: {err:#}");
-                vec![]
+                (vec![], false)
             }
         };
         let mut sms: Option<TrustedPhone> = None;
+        if no_devices && let Some(phone) = phones.first().cloned() {
+            eprintln!("Apple says no device can show a code for this account, so it's being texted instead.");
+            session.send_sms(&phone)?;
+            sms = Some(phone);
+        }
         loop {
             let hint = if phones.is_empty() || sms.is_some() { "" } else { ", or type sms to get it by text" };
             let prompt = match &sms {

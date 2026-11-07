@@ -5,7 +5,7 @@ import { ArrowLeft, ArrowUp, Bell, BellOff, Download, File as FileIcon, Mail, Me
 import { api, blobUrl, errorText, native, type Attachment, type Chat } from "@/lib/bb";
 import { addToThread, keys, type LocalMessage, type ThreadData } from "@/lib/events";
 import { NARROW_BELOW, useApp, useWidth } from "@/lib/app";
-import { bytes, dayLabel, sameDay, shortTime, time } from "@/lib/format";
+import { bytes, dayLabel, groupEventText, sameDay, shortTime, time } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Avatar, Badge, Button, Card, Center, EmptyState, IconButton, SearchInput, Spinner, Textarea } from "@/components/ui";
 import { Linkified } from "@/components/Linkified";
@@ -103,7 +103,8 @@ function ChatList({ chats, loading, error, selected, onSelect }: { chats?: Chat[
 
 const ChatRow = memo(function ChatRow({ chat, active, onSelect }: { chat: Chat; active: boolean; onSelect: (g: string) => void }) {
   const last = chat.last_message;
-  const preview = last ? (last.text?.trim() || (last.attachments.length ? "Attachment" : "")) : "";
+  const event = last && groupEventText(last);
+  const preview = last ? (event ?? (last.text?.trim() || (last.attachments.length ? "Attachment" : ""))) : "";
   return (
     <button
       onClick={() => onSelect(chat.guid)}
@@ -117,7 +118,7 @@ const ChatRow = memo(function ChatRow({ chat, active, onSelect }: { chat: Chat; 
         </span>
         <span className="flex items-center gap-1.5">
           {isSms(chat) && <span className="shrink-0 rounded-full border border-border px-1.5 text-[10px] leading-4 text-subtle">SMS</span>}
-          <span className="truncate text-xs text-muted">{last?.is_from_me ? `You: ${preview}` : preview}</span>
+          <span className="truncate text-xs text-muted">{last?.is_from_me && !event ? `You: ${preview}` : preview}</span>
         </span>
       </span>
     </button>
@@ -126,6 +127,7 @@ const ChatRow = memo(function ChatRow({ chat, active, onSelect }: { chat: Chat; 
 
 type Row =
   | { kind: "day"; key: string; label: string }
+  | { kind: "event"; key: string; text: string; date: number }
   | { kind: "msg"; key: string; m: LocalMessage; sender: string | null; tail: boolean };
 
 let localId = 0;
@@ -153,9 +155,15 @@ function Thread({ chat, onBack }: { chat: Chat; onBack?: () => void }) {
     const messages = thread.data ? thread.data.pages.slice().reverse().flat() : [];
     const out: Row[] = [];
     messages.forEach((m, i) => {
-      const prev = messages[i - 1];
-      const next = messages[i + 1];
-      if (!prev || !sameDay(new Date(prev.date), new Date(m.date))) out.push({ kind: "day", key: `d${m.date}-${m.guid}`, label: dayLabel(m.date) });
+      // Events split runs of bubbles, like a change of sender does.
+      const prev = messages[i - 1]?.group_event ? undefined : messages[i - 1];
+      const next = messages[i + 1]?.group_event ? undefined : messages[i + 1];
+      if (!messages[i - 1] || !sameDay(new Date(messages[i - 1].date), new Date(m.date))) out.push({ kind: "day", key: `d${m.date}-${m.guid}`, label: dayLabel(m.date) });
+      const event = groupEventText(m);
+      if (event) {
+        out.push({ kind: "event", key: m.guid, text: event, date: m.date });
+        return;
+      }
       const sender = group && !m.is_from_me && (!prev || prev.sender !== m.sender || prev.is_from_me) ? m.sender : null;
       const tail = !next || next.is_from_me !== m.is_from_me || next.sender !== m.sender || next.date - m.date > 5 * 60_000;
       out.push({ kind: "msg", key: m.guid, m, sender, tail });
@@ -166,7 +174,7 @@ function Thread({ chat, onBack }: { chat: Chat; onBack?: () => void }) {
   const virtual = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scroller.current,
-    estimateSize: (i) => (rows[i].kind === "day" ? 40 : 44),
+    estimateSize: (i) => (rows[i].kind === "msg" ? 44 : 32),
     getItemKey: (i) => rows[i].key,
     overscan: 10,
   });
@@ -200,7 +208,7 @@ function Thread({ chat, onBack }: { chat: Chat; onBack?: () => void }) {
     if (!text) return;
     setDraft("");
     atBottom.current = true;
-    const local: LocalMessage = { guid: `local-${++localId}`, chat_guid: chat.guid, sender: null, is_from_me: true, text, date: Date.now(), attachments: [] };
+    const local: LocalMessage = { guid: `local-${++localId}`, chat_guid: chat.guid, sender: null, is_from_me: true, text, date: Date.now(), attachments: [], group_event: null };
     addToThread(qc, local);
     try {
       await api.sendText(chat.guid, text);
@@ -290,6 +298,8 @@ function Thread({ chat, onBack }: { chat: Chat; onBack?: () => void }) {
                   <div key={item.key} data-index={item.index} ref={virtual.measureElement} style={{ position: "absolute", top: 0, left: 0, right: 0, transform: `translateY(${item.start}px)` }}>
                     {row.kind === "day" ? (
                       <div className="py-3 text-center text-[11px] font-medium text-subtle">{row.label}</div>
+                    ) : row.kind === "event" ? (
+                      <div title={time(row.date)} className="selectable px-6 py-2 text-center text-[11.5px] text-subtle">{row.text}</div>
                     ) : (
                       <Bubble m={row.m} sms={isSms(chat)} sender={row.sender} tail={row.tail} onView={setViewing} />
                     )}
@@ -351,7 +361,7 @@ function AutoTextarea({ value, onChange, onSubmit, placeholder }: { value: strin
 
 const Bubble = memo(function Bubble({ m, sms, sender, tail, onView }: { m: LocalMessage; sms: boolean; sender: string | null; tail: boolean; onView: (a: Attachment) => void }) {
   const mine = m.is_from_me;
-  const style = mine ? (sms ? "border border-border-strong text-fg" : "bg-primary text-primary-fg") : "bg-raised text-fg";
+  const style = mine ? (sms ? "border border-border-strong text-fg" : "bb-inverted bg-primary text-primary-fg") : "bg-raised text-fg";
   const text = m.text?.replace(/￼/g, "").trim();
   return (
     <div className={cn("flex flex-col", mine ? "items-end" : "items-start", tail ? "pb-2" : "pb-0.5")}>

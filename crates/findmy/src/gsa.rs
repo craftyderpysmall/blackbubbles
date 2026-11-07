@@ -115,7 +115,7 @@ fn authenticate(
     ids: &DeviceIds,
     apple_id: &str,
     password: &str,
-    code_prompt: &mut dyn FnMut() -> Result<String>,
+    code_prompt: &mut dyn FnMut(&str) -> Result<String>,
     attempt: u32,
 ) -> Result<Dictionary> {
     let srp_client = srp::Client::new(apple_id);
@@ -165,38 +165,65 @@ fn trusted_device_2fa(
     provider: &dyn Provider,
     ids: &DeviceIds,
     spd: &Dictionary,
-    code_prompt: &mut dyn FnMut() -> Result<String>,
+    code_prompt: &mut dyn FnMut(&str) -> Result<String>,
 ) -> Result<()> {
     let adsid = spd.get("adsid").and_then(Value::as_string).context("spd lacks adsid")?;
     let idms = spd.get("GsIdmsToken").and_then(Value::as_string).context("spd lacks GsIdmsToken")?;
     let identity = B64.encode(format!("{adsid}:{idms}"));
-    let request = |url: &str, code: Option<&str>| -> Result<reqwest::blocking::Response> {
-        let mut builder = client
-            .get(url)
-            .header("Content-Type", "text/x-xml-plist")
-            .header("Accept", "text/x-xml-plist")
+    let anisette = anisette::full_headers(provider, ids)?;
+    let with_headers = |mut builder: reqwest::blocking::RequestBuilder, plist: bool| {
+        let kind = if plist { "text/x-xml-plist" } else { "application/json" };
+        builder = builder
+            .header("Content-Type", kind)
+            .header("Accept", kind)
             .header("User-Agent", "Xcode")
             .header("X-Apple-Identity-Token", &identity)
             .header("X-Apple-App-Info", "com.apple.gs.xcode.auth")
             .header("X-Xcode-Version", "11.2 (11B41)");
-        for (k, v) in anisette::full_headers(provider, ids)? {
+        for (k, v) in &anisette {
             builder = builder.header(k, v);
         }
-        if let Some(code) = code {
-            builder = builder.header("security-code", code);
-        }
-        Ok(builder.send()?)
+        builder
     };
-    let push = request("https://gsa.apple.com/auth/verify/trusteddevice", None)?;
+
+    let push = with_headers(client.get("https://gsa.apple.com/auth/verify/trusteddevice"), true).send()?;
     if !push.status().is_success() {
-        eprintln!("warning: Apple didn't push a code ({}); generate one on a device instead.", push.status());
+        eprintln!("warning: Apple didn't push a code ({}).", push.status());
     }
-    let code = code_prompt()?;
-    let reply = request("https://gsa.apple.com/grandslam/GsService2/validate", Some(code.trim()))?;
-    if !reply.status().is_success() {
-        bail!("2FA code was rejected ({})", reply.status());
+    let mut sms: Option<(i64, String)> = None;
+    loop {
+        let prompt = match &sms {
+            Some((_, number)) => format!("Enter the 6-digit code texted to {number}: "),
+            None => "Enter the new 6-digit code from your Apple device, or type sms to get it by text: ".to_string(),
+        };
+        let answer = code_prompt(&prompt)?;
+        if answer.trim().eq_ignore_ascii_case("sms") && sms.is_none() {
+            let auth: serde_json::Value = with_headers(client.get("https://gsa.apple.com/auth"), false).send()?.json()?;
+            let phone = auth
+                .pointer("/trustedPhoneNumbers/0")
+                .and_then(|p| Some((p.get("id")?.as_i64()?, p.get("numberWithDialCode").and_then(serde_json::Value::as_str).unwrap_or("your phone").to_string())))
+                .context("Apple didn't list a trusted phone number for this account")?;
+            let reply = with_headers(client.put("https://gsa.apple.com/auth/verify/phone/"), false)
+                .json(&serde_json::json!({ "phoneNumber": { "id": phone.0 }, "mode": "sms" }))
+                .send()?;
+            if !reply.status().is_success() {
+                bail!("Apple couldn't send the text ({})", reply.status());
+            }
+            sms = Some(phone);
+            continue;
+        }
+        let code = answer.trim();
+        let reply = match &sms {
+            None => with_headers(client.get("https://gsa.apple.com/grandslam/GsService2/validate"), true).header("security-code", code).send()?,
+            Some((id, _)) => with_headers(client.post("https://gsa.apple.com/auth/verify/phone/securitycode"), false)
+                .json(&serde_json::json!({ "phoneNumber": { "id": id }, "securityCode": { "code": code }, "mode": "sms" }))
+                .send()?,
+        };
+        if reply.status().is_success() {
+            return Ok(());
+        }
+        eprintln!("2FA code was rejected ({}); try again.", reply.status());
     }
-    Ok(())
 }
 
 /// Sign in and fetch the search-party token used for beacon reports.
@@ -204,7 +231,7 @@ pub fn login(
     provider: &dyn Provider,
     apple_id: &str,
     password: &str,
-    mut code_prompt: impl FnMut() -> Result<String>,
+    mut code_prompt: impl FnMut(&str) -> Result<String>,
 ) -> Result<SearchPartyAuth> {
     let client = http()?;
     let ids = DeviceIds::generate();

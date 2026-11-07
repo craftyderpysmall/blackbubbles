@@ -87,8 +87,15 @@
     -webkit-user-select: text;
     cursor: auto;
   }
+  /* Selection is the inverted pair: white with black text, and the reverse on white
+     surfaces (your iMessage bubbles, primary buttons) so it stays visible. */
   ::selection {
-    background: var(--color-border-strong);
+    background: var(--color-fg);
+    color: var(--color-bg);
+  }
+  .bb-inverted::selection,
+  .bb-inverted ::selection {
+    background: var(--color-bg);
     color: var(--color-fg);
   }
   button {

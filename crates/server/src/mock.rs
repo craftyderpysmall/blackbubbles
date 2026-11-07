@@ -76,6 +76,7 @@ impl MockBackend {
                     } else {
                         vec![]
                     },
+                    group_event: None,
                 });
             }
             chats.push(Chat {
@@ -87,6 +88,35 @@ impl MockBackend {
                 my_address: Some(if i == 1 { "me@icloud.com".into() } else { "+15550000000".into() }),
             });
         }
+        // A group chat with the events Messages records (rename, add, leave).
+        let group = "iMessage;+;chat-weekend";
+        let at = |m: i64| now - 30 * 60_000 + m * 60_000;
+        let mut line = |id: &str, sender: Option<&str>, text: Option<&str>, date: i64, event: Option<GroupEvent>| {
+            messages.push(Message {
+                guid: id.into(),
+                chat_guid: group.into(),
+                sender: sender.map(str::to_owned),
+                is_from_me: sender.is_none(),
+                text: text.map(str::to_owned),
+                date,
+                attachments: vec![],
+                group_event: event,
+            })
+        };
+        line("g-0", None, None, at(0), Some(GroupEvent::Renamed { name: Some("Weekend trip 🏕️".into()) }));
+        line("g-1", None, None, at(1), Some(GroupEvent::Added { who: Some("Anthony".into()) }));
+        line("g-2", Some("Anthony"), Some("thanks for adding me!"), at(2), None);
+        line("g-3", Some("Alex"), Some("I'll bring the tent"), at(3), None);
+        line("g-4", Some("Sam"), None, at(4), Some(GroupEvent::Left));
+        line("g-5", Some("Alex"), None, at(5), Some(GroupEvent::PhotoChanged));
+        chats.push(Chat {
+            guid: group.into(),
+            display_name: Some("Weekend trip 🏕️".into()),
+            participants: vec!["Alex".into(), "Anthony".into()],
+            service: Service::IMessage,
+            last_message: None,
+            my_address: Some("+15550000000".into()),
+        });
         let today = now - now.rem_euclid(DAY);
         let events = vec![
             event("e1", "home", "Dentist", today + 9 * HOUR, today + 10 * HOUR),
@@ -267,6 +297,7 @@ impl Backend for MockBackend {
                     text: Some(text),
                     date: now_ms(),
                     attachments: vec![],
+                    group_event: None,
                 };
                 state.messages.push(message.clone());
                 self.emit_later(Event::NewMessage(message));
@@ -283,6 +314,7 @@ impl Backend for MockBackend {
                     text: None,
                     date: now_ms(),
                     attachments: vec![Attachment { guid: format!("sent-att-{}", state.next_id), mime_type: mime, file_name: Some(file_name), total_bytes: data.len() as u64 }],
+                    group_event: None,
                 };
                 state.messages.push(message.clone());
                 self.emit_later(Event::NewMessage(message));
@@ -486,6 +518,7 @@ impl Backend for MockBackend {
                     text: Some(text.clone()),
                     date: now_ms(),
                     attachments: vec![],
+                    group_event: None,
                 };
                 sink(Event::NewMessage(message));
                 sink(Event::IncomingText { sender: "55512".into(), text, service: Service::Sms });

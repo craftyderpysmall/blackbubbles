@@ -135,9 +135,7 @@ fn main() -> Result<()> {
                 }
                 let provider = anisette_provider(&dir)?;
                 eprintln!("\nSigning in a second time for Offline Finding (locating this PC's beacon). This needs a new code.");
-                let auth = bb_findmy::gsa::login(&*provider, &apple_id, &password, || {
-                    ask("Enter the new 6-digit code from your Apple device: ")
-                })?;
+                let auth = bb_findmy::gsa::login(&*provider, &apple_id, &password, ask)?;
                 bb_net::write_private(&icloud_dir.join("searchparty.json"), &serde_json::to_vec_pretty(&auth)?)?;
                 println!("Signed in to Offline Finding. Registered beacons will now be located.");
             }
@@ -158,10 +156,8 @@ fn main() -> Result<()> {
 
 /// Read a line without echoing it when stdin is a terminal.
 const CODE_HELP: &str = "\
-If Apple asks for a code and no pop-up appears on your devices, make one yourself:
-  iPhone/iPad: Settings → your name → Sign-In & Security → Two-Factor Authentication → Get Verification Code
-  Mac:         System Settings → your name → Sign-In & Security → Two-Factor Authentication → Get Verification Code
-";
+Apple will ask for a 6-digit code. If no pop-up appears on your iPhone, iPad or Mac
+within a minute, type sms and press Enter: Apple texts the code to your phone number.";
 
 /// Read one visible line (for 2FA codes).
 fn ask(prompt: &str) -> Result<String> {

@@ -20,7 +20,16 @@ export interface Message {
   text: string | null;
   date: Timestamp;
   attachments: Attachment[];
+  /** Group-chat event shown as a centred line; its actor is `sender` (or you). */
+  group_event: GroupEvent | null;
 }
+export type GroupEvent =
+  | { Added: { who: string | null } }
+  | { Removed: { who: string | null } }
+  | "Left"
+  | { Renamed: { name: string | null } }
+  | "PhotoChanged"
+  | "PhotoRemoved";
 export interface Chat {
   guid: string;
   display_name: string | null;
