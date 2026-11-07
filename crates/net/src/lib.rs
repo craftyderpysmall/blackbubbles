@@ -184,7 +184,7 @@ pub type ServerStream = WebSocketStream<tokio_rustls::server::TlsStream<TcpStrea
 
 /// Open a pinned TLS WebSocket to the server.
 pub async fn connect(host: &str, port: u16, pin: Fingerprint) -> Result<ClientStream> {
-    let tcp = TcpStream::connect((host, port)).await.with_context(|| format!("connecting to {host}:{port}"))?;
+    let tcp = connect_tcp(host, port).await?;
     tcp.set_nodelay(true)?;
     let tls = connector(pin)?.connect(ServerName::try_from(SNI_NAME)?, tcp).await?;
     let (ws, _) = tokio_tungstenite::client_async_with_config(
@@ -194,6 +194,41 @@ pub async fn connect(host: &str, port: u16, pin: Fingerprint) -> Result<ClientSt
     )
     .await?;
     Ok(ws)
+}
+
+/// How long one address may take to accept a TCP connection.
+const ADDRESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+const ATTEMPT_STAGGER: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Connect to every address `host` resolves to at once and keep the first that answers.
+///
+/// mDNS often returns an IPv6 address first (the owner's Mac: a ULA that `bbd` didn't
+/// listen on). Trying addresses one at a time, as `TcpStream::connect` does, lets one
+/// dead address use up the caller's whole timeout before the working one is tried.
+async fn connect_tcp(host: &str, port: u16) -> Result<TcpStream> {
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .with_context(|| format!("resolving {host}"))?
+        .collect();
+    if addrs.is_empty() {
+        bail!("{host} has no addresses");
+    }
+    // Staggered like Happy Eyeballs (RFC 8305): the next address starts only if the earlier
+    // ones haven't connected yet, so normally just one connection is opened.
+    let attempts = addrs.into_iter().enumerate().map(|(i, addr)| {
+        Box::pin(async move {
+            tokio::time::sleep(ATTEMPT_STAGGER * i as u32).await;
+            match tokio::time::timeout(ADDRESS_TIMEOUT, TcpStream::connect(addr)).await {
+                Ok(Ok(tcp)) => Ok(tcp),
+                Ok(Err(err)) => Err(anyhow!("{addr}: {err}")),
+                Err(_) => Err(anyhow!("{addr}: timed out")),
+            }
+        })
+    });
+    let (tcp, _) = futures_util::future::select_ok(attempts)
+        .await
+        .with_context(|| format!("connecting to {host}:{port}"))?;
+    Ok(tcp)
 }
 
 /// Complete TLS and the WebSocket handshake for an accepted TCP connection.
@@ -335,5 +370,19 @@ mod tests {
 
         assert!(connect("127.0.0.1", port, Fingerprint([0; 32])).await.is_err());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// `localhost` usually resolves to `::1` first; with only IPv4 listening the client must
+    /// still get through (the owner's Mac: mDNS gave an IPv6 address bbd didn't serve).
+    #[tokio::test]
+    async fn falls_back_to_an_address_that_listens() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { while listener.accept().await.is_ok() {} });
+        let tcp = tokio::time::timeout(std::time::Duration::from_secs(5), connect_tcp("localhost", port))
+            .await
+            .expect("fallback took too long")
+            .unwrap();
+        assert!(tcp.peer_addr().unwrap().ip().is_loopback());
     }
 }

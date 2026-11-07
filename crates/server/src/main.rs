@@ -200,13 +200,57 @@ async fn serve(
         let _ = sender.send(event);
     }));
     let shared = Arc::new(Shared { store, backend, events, server_name });
-    let listener = tokio::net::TcpListener::bind(bind).await.with_context(|| format!("binding {bind}"))?;
+    let mut listeners = vec![tokio::net::TcpListener::bind(bind).await.with_context(|| format!("binding {bind}"))?];
     info!("listening on {bind}, fingerprint {}", identity.fingerprint());
+    // mDNS hands out the Mac's IPv6 addresses too (often first), so the IPv4 wildcard alone
+    // makes clients depend on falling back. Also listen on the IPv6 wildcard.
+    if bind.ip() == std::net::Ipv4Addr::UNSPECIFIED {
+        let v6 = SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, bind.port()));
+        match listen_v6_only(v6) {
+            Ok(listener) => {
+                info!("listening on {v6}");
+                listeners.push(listener);
+            }
+            Err(err) => warn!("not listening on IPv6: {err:#}"),
+        }
+    }
     if shared.store.devices().is_empty() {
         info!("no devices paired yet; run `bbd pair` to get a pairing string");
     }
+    let loops: Vec<_> = listeners
+        .into_iter()
+        .map(|listener| tokio::spawn(accept_loop(listener, acceptor.clone(), shared.clone())))
+        .collect();
+    for task in loops {
+        task.await?;
+    }
+    Ok(())
+}
+
+/// An IPv6-only listener, so it can sit beside the IPv4 one on the same port.
+fn listen_v6_only(addr: SocketAddr) -> Result<tokio::net::TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_only_v6(true)?;
+    socket.set_reuse_address(true)?;
+    socket.bind(&addr.into()).with_context(|| format!("binding {addr}"))?;
+    socket.listen(1024)?;
+    socket.set_nonblocking(true)?;
+    Ok(tokio::net::TcpListener::from_std(socket.into())?)
+}
+
+async fn accept_loop(listener: tokio::net::TcpListener, acceptor: bb_net::tokio_rustls::TlsAcceptor, shared: Arc<Shared>) {
     loop {
-        let (tcp, peer) = listener.accept().await?;
+        let (tcp, peer) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            // e.g. out of file descriptors, or a connection reset before accept. Keep
+            // serving; this used to end the whole server.
+            Err(err) => {
+                warn!("accept failed: {err}");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                continue;
+            }
+        };
         let (acceptor, shared) = (acceptor.clone(), shared.clone());
         tokio::spawn(async move {
             if let Err(err) = session(tcp, peer, &acceptor, shared).await {
@@ -215,6 +259,10 @@ async fn serve(
         });
     }
 }
+
+/// Clients ping every 15 s (older builds every 20 s), so a silent minute means
+/// the client is gone (slept, lost Wi-Fi) without closing; drop the session and its socket.
+const CLIENT_SILENCE_LIMIT: Duration = Duration::from_secs(60);
 
 async fn reject(ws: &mut bb_net::ServerStream, code: ErrorCode, message: &str) -> Result<()> {
     // Slow down guessing.
@@ -295,7 +343,12 @@ async fn session(
     });
 
     let result = async {
-        while let Some(message) = stream.next().await {
+        loop {
+            let message = match tokio::time::timeout(CLIENT_SILENCE_LIMIT, stream.next()).await {
+                Ok(Some(message)) => message,
+                Ok(None) => break,
+                Err(_) => bail!("no ping from the client for {}s", CLIENT_SILENCE_LIMIT.as_secs()),
+            };
             let Some(frame) = bb_net::from_message::<ClientFrame>(&message?)? else { continue };
             let ClientFrame::Request { id, req } = frame else { continue };
             let (backend, out_tx) = (shared.backend.clone(), out_tx.clone());

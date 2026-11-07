@@ -75,6 +75,9 @@ impl AppState {
         {
             client.set_autofill(tx.clone());
         }
+        // Silence the old client first, so none of its statuses can land after the new one's.
+        let old = std::mem::replace(&mut *self.client.write().unwrap(), client.clone());
+        old.close();
         let events = app.clone();
         client.on_event(Arc::new(move |event: &Event| {
             if !matches!(event, Event::IncomingText { .. }) {
@@ -82,6 +85,7 @@ impl AppState {
             }
         }));
         let statuses = app.clone();
+        // Also emits the current status right away.
         client.on_status(Arc::new(move |status: &Status| {
             let _ = statuses.emit("status", status);
         }));
@@ -89,10 +93,7 @@ impl AppState {
             let _guard = self.rt.enter();
             Notifier::start(&client, self.notifications.clone(), self.focused.clone(), self.autofill_running && config.autofill.notify)
         });
-        let old = std::mem::replace(&mut *self.client.write().unwrap(), client.clone());
-        old.close();
         *self.notifier.lock().unwrap() = notifier;
-        let _ = app.emit("status", client.status());
     }
 
     fn update(&self, f: impl FnOnce(&mut Config)) -> Result<ConfigView, String> {

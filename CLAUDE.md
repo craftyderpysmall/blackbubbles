@@ -16,6 +16,11 @@ How it fits together:
 - **Emoji:** the font stack prefers a complete system colour emoji font (Apple Color Emoji; Noto Color Emoji is a Linux package dependency). The bundled `@fontsource/noto-color-emoji` subsets are renamed "BlackBubbles Emoji" and only a fallback, because split subsets can't shape emoji + U+FE0F (✈️ ❤️ drew boxes). The mock's reminder "Flight to Lisbon ✈️" is the regression check.
 - **Fonts:** Inter, JetBrains Mono and Noto Color Emoji come from `@fontsource` (licences in `ui/licenses/`) (imported in `main.tsx`, not CSS, so the `woff2Only` Vite plugin can drop the `.woff` fallbacks). The emoji font is split by unicode-range, so only used glyphs load.
 - **Reconnecting:** `Client::close()` stops the old connection task and the notifier's poll loop. (The egui client leaked both after re-pairing.)
+- **Liveness (fixed 2026-11-06, owner saw the dot stuck on yellow "Connecting"):**
+  - The real Mac resolves over mDNS to an IPv6 ULA *first*, then IPv4. `bbd` only listened on `0.0.0.0`, so IPv6 was refused. `bbd` now also listens on `[::]` (v6-only socket), and `bb_net::connect` tries every address staggered by 250 ms (8 s each) instead of one at a time.
+  - The client handshake (connect + Hello/Welcome) has one 15 s deadline; before, a connection dying before `Welcome` hung forever. Pings go every 15 s, and 45 s without any frame counts as dead. Sends time out after 10 s. Backoff is capped at 10 s.
+  - `bbd` drops a session after 60 s without a client frame. An accept error no longer ends the server.
+  - Status hooks run under `status_delivery`, and `on_status` emits the current status at once. `AppState::connect` closes the old client before wiring the new one, so a stale status can't land last.
 
 Possible next steps (ask first): a tray icon, a "new conversation" composer, typed proto bindings (e.g. `ts-rs`) instead of the hand-written mirror, and rich note bodies (the protocol only carries plain text today).
 

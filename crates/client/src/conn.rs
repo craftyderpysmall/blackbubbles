@@ -25,11 +25,24 @@ pub enum Status {
 
 type Reply = oneshot::Sender<Result<Response, ApiError>>;
 
+/// Connect + TLS + WebSocket + Hello/Welcome.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+const PING_EVERY: Duration = Duration::from_secs(15);
+/// No frame (not even a pong) for this long: the connection is dead.
+const SILENCE_LIMIT: Duration = Duration::from_secs(45);
+const SEND_TIMEOUT: Duration = Duration::from_secs(10);
+/// Longest wait between reconnect attempts. It's a LAN, so retrying is cheap, and the
+/// Mac waking up should show as connected within seconds.
+const MAX_BACKOFF: Duration = Duration::from_secs(10);
+
 struct Inner {
     status: Mutex<Status>,
     autofill: Mutex<Option<std_mpsc::Sender<bb_autofill::Incoming>>>,
     hooks: Mutex<Vec<EventHook>>,
     status_hooks: Mutex<Vec<StatusHook>>,
+    /// Held while status hooks run, so they see changes in order and none fire after
+    /// `close()` (a stale "Connecting" from a replaced client used to stick in the UI).
+    status_delivery: Mutex<()>,
     closed: tokio::sync::watch::Sender<bool>,
 }
 
@@ -54,6 +67,7 @@ impl Client {
             autofill: Mutex::default(),
             hooks: Mutex::default(),
             status_hooks: Mutex::default(),
+            status_delivery: Mutex::default(),
             closed: tokio::sync::watch::channel(false).0,
         });
         let tx = server.map(|server| {
@@ -73,15 +87,18 @@ impl Client {
         self.inner.hooks.lock().unwrap().push(hook);
     }
 
-    /// Called whenever the connection status changes.
+    /// Called with the current status now, then whenever it changes.
     pub fn on_status(&self, hook: StatusHook) {
-        self.inner.status_hooks.lock().unwrap().push(hook);
+        let _delivery = self.inner.status_delivery.lock().unwrap();
+        self.inner.status_hooks.lock().unwrap().push(hook.clone());
+        hook(&self.status());
     }
 
     /// Stop the connection task and the notifier's poll loop (after re-pairing).
     pub fn close(&self) {
         let _ = self.inner.closed.send(true);
         self.inner.hooks.lock().unwrap().clear();
+        let _delivery = self.inner.status_delivery.lock().unwrap();
         self.inner.status_hooks.lock().unwrap().clear();
     }
 
@@ -131,6 +148,7 @@ impl Client {
 
 impl Inner {
     fn set_status(&self, status: Status) {
+        let _delivery = self.status_delivery.lock().unwrap();
         {
             let mut current = self.status.lock().unwrap();
             if *current == status {
@@ -195,7 +213,7 @@ async fn connect_loop(inner: &Arc<Inner>, server: ServerConfig, mut rx: mpsc::Un
                 },
             }
         }
-        backoff = (backoff * 2).min(Duration::from_secs(30));
+        backoff = (backoff * 2).min(MAX_BACKOFF);
     }
 }
 
@@ -206,31 +224,45 @@ async fn session(
     connected: &mut bool,
 ) -> Result<()> {
     let pin = server.fingerprint.parse()?;
-    let mut ws = tokio::time::timeout(Duration::from_secs(15), bb_net::connect(&server.host, server.port, pin))
-        .await
-        .map_err(|_| anyhow!("timed out connecting to {}", server.host))??;
-    bb_net::send(&mut ws, &ClientFrame::Hello { protocol: PROTOCOL_VERSION, device_token: server.token.clone() }).await?;
-    match bb_net::recv::<_, ServerFrame>(&mut ws).await? {
-        ServerFrame::Welcome { server_name, .. } => inner.set_status(Status::Connected { server_name }),
-        ServerFrame::Rejected(err) => bail!("{}", err.message),
-        other => bail!("unexpected greeting {other:?}"),
-    }
+    // The whole handshake shares one deadline. Before, only the TCP/TLS part had one, so a
+    // connection that died before `Welcome` left the status on "Connecting" forever.
+    let (ws, server_name) = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+        let mut ws = bb_net::connect(&server.host, server.port, pin).await?;
+        bb_net::send(&mut ws, &ClientFrame::Hello { protocol: PROTOCOL_VERSION, device_token: server.token.clone() })
+            .await?;
+        match bb_net::recv::<_, ServerFrame>(&mut ws).await? {
+            ServerFrame::Welcome { server_name, .. } => Ok((ws, server_name)),
+            ServerFrame::Rejected(err) => bail!("{}", err.message),
+            other => bail!("unexpected greeting {other:?}"),
+        }
+    })
+    .await
+    .map_err(|_| anyhow!("timed out connecting to {}", server.host))??;
+    inner.set_status(Status::Connected { server_name });
     *connected = true;
 
     let (mut sink, mut stream) = ws.split();
     let mut pending: HashMap<u64, Reply> = HashMap::new();
     let mut next_id = 0u64;
-    let mut ping = tokio::time::interval(Duration::from_secs(20));
+    let mut ping = tokio::time::interval(PING_EVERY);
+    // Anything from the server (a pong included) proves the link is alive. Without this a
+    // connection that dies silently (the Mac sleeping, Wi-Fi dropping) only fails when the
+    // kernel gives up on retransmitting, which takes about 15 minutes.
+    let mut last_heard = tokio::time::Instant::now();
     loop {
         tokio::select! {
             next = rx.recv() => {
                 let Some((req, reply)) = next else { return Ok(()) };
                 next_id += 1;
                 pending.insert(next_id, reply);
-                sink.send(bb_net::to_message(&ClientFrame::Request { id: next_id, req })?).await?;
+                let message = bb_net::to_message(&ClientFrame::Request { id: next_id, req })?;
+                tokio::time::timeout(SEND_TIMEOUT, sink.send(message))
+                    .await
+                    .map_err(|_| anyhow!("the Mac stopped responding"))??;
             }
             message = stream.next() => {
                 let message = message.ok_or_else(|| anyhow!("server closed the connection"))??;
+                last_heard = tokio::time::Instant::now();
                 match bb_net::from_message::<ServerFrame>(&message)? {
                     Some(ServerFrame::Response { id, res }) => {
                         if let Some(reply) = pending.remove(&id) {
@@ -243,7 +275,13 @@ async fn session(
                 }
             }
             _ = ping.tick() => {
-                sink.send(bb_net::tokio_tungstenite::tungstenite::Message::Ping(Vec::new().into())).await?;
+                if last_heard.elapsed() > SILENCE_LIMIT {
+                    bail!("the Mac stopped responding");
+                }
+                let message = bb_net::tokio_tungstenite::tungstenite::Message::Ping(Vec::new().into());
+                tokio::time::timeout(SEND_TIMEOUT, sink.send(message))
+                    .await
+                    .map_err(|_| anyhow!("the Mac stopped responding"))??;
             }
         }
     }

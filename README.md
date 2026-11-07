@@ -50,6 +50,20 @@ Codes come from three places:
 | X11 | native | XTest | freedesktop, with actions |
 | macOS | NSPasteboard | the code stays on the clipboard; press ⌘V | Notification Center |
 
+**Keep autofill running when the window is closed.** Otherwise codes are only caught while the BlackBubbles window is open:
+
+```sh
+systemctl --user enable --now blackbubbles   # runs `blackbubbles daemon`
+```
+
+**Coming from linuxautofill?** Uninstall it, or every code shows two notifications (one from each). The `[autofill]` section of `~/.config/blackbubbles/config.toml` uses the same keys, so move your settings over first: `[http]` becomes `[autofill.http]` (port and token, so the iPhone Shortcut keeps working unchanged) and each `[[gmail]]` becomes `[[autofill.gmail]]`. Then:
+
+```sh
+systemctl --user disable --now linuxautofill
+rm ~/.config/systemd/user/linuxautofill.service   # if it's still there
+rm -r ~/.config/linuxautofill /path/to/your/linuxautofill/clone
+```
+
 ## Design
 
 The UI follows the "Neutral" desktop theme:
