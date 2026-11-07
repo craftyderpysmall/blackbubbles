@@ -7,3 +7,7 @@ config.toml
 /crates/client/gen
 node_modules/
 /ui/dist
+/packaging/linux/src
+/packaging/linux/pkg
+/packaging/linux/blackbubbles
+/packaging/linux/*.pkg.tar.*

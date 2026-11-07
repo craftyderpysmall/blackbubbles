@@ -14,6 +14,9 @@ optdepends=('wl-clipboard: Wayland clipboard for autofill'
 makedepends=('cargo' 'git' 'nodejs' 'npm')
 provides=('blackbubbles')
 conflicts=('blackbubbles')
+# makepkg's LTO (-flto=auto in CFLAGS) turns ring's C objects into GCC LTO bytecode,
+# which Rust's linker can't read ("undefined symbol: ring_core_…"). Cargo does its own LTO.
+options=('!lto')
 source=("git+$url.git")
 sha256sums=('SKIP')
 
