@@ -309,7 +309,8 @@ impl Notes {
             let o = |c: &str| if obj.iter().any(|h| h == c) { format!("n.{c}") } else { "NULL".into() };
             let d = |c: &str| if data_cols.iter().any(|h| h == c) { format!("d.{c}") } else { "NULL".into() };
             let sql = format!(
-                "SELECT {salt}, {iter}, {wrapped}, COALESCE({div}, {oiv}), COALESCE({dtag}, {otag}), d.ZDATA
+                "SELECT {salt}, {iter}, {wrapped}, COALESCE({div}, {oiv}), COALESCE({dtag}, {otag}), d.ZDATA,
+                        COALESCE({oiv}, {div}), COALESCE({otag}, {dtag})
                  FROM {OBJECTS} n LEFT JOIN ZICNOTEDATA d ON d.ZNOTE = n.Z_PK WHERE n.Z_PK = ?1",
                 salt = o("ZCRYPTOSALT"),
                 iter = o("ZCRYPTOITERATIONCOUNT"),
@@ -320,14 +321,26 @@ impl Notes {
                 otag = o("ZCRYPTOTAG"),
             );
             type Blob = Option<Vec<u8>>;
-            let (salt, iterations, wrapped, iv, tag, data): (Blob, Option<i64>, Blob, Blob, Blob, Blob) = conn
-                .query_row(&sql, [pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+            let ((salt, iterations, wrapped, iv, tag, data), (key_iv, key_tag)): ((Blob, Option<i64>, Blob, Blob, Blob, Blob), (Blob, Blob)) = conn
+                .query_row(&sql, [pk], |r| Ok(((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?), (r.get(6)?, r.get(7)?))))
                 .map_err(sql_err)?;
             let missing = || ApiError::unsupported("This note's encryption isn't readable here (it may be locked with your device passcode). Open it on your iPhone or Mac.");
             let (Some(salt), Some(iterations), Some(wrapped), Some(iv), Some(tag), Some(data)) = (salt, iterations, wrapped, iv, tag, data) else {
                 return Err(missing());
             };
-            let locked = crate::notecrypt::Locked { salt: &salt, iterations: iterations.clamp(0, 10_000_000) as u32, wrapped_key: &wrapped, iv: &iv, tag: &tag, data: &data };
+            // The note row's own IV/tag may differ from the note-data row's (they can belong
+            // to the wrapped key rather than the body).
+            let (key_iv, key_tag) = (key_iv.unwrap_or_else(|| iv.clone()), key_tag.unwrap_or_else(|| tag.clone()));
+            let locked = crate::notecrypt::Locked {
+                salt: &salt,
+                iterations: iterations.clamp(0, 10_000_000) as u32,
+                wrapped_key: &wrapped,
+                key_iv: &key_iv,
+                key_tag: &key_tag,
+                iv: &iv,
+                tag: &tag,
+                data: &data,
+            };
             // The account (via the note's folder) holds the password salt/iterations/verifier
             // in the account-level scheme.
             let account_row: Option<(Blob, Option<i64>, Blob)> = match s.folder_owner {
@@ -352,15 +365,76 @@ impl Notes {
                 }),
                 _ => None,
             };
-            let plain = crate::notecrypt::decrypt(&locked, account.as_ref(), password).map_err(|e| match e {
+            let (plain, how) = crate::notecrypt::decrypt_traced(&locked, account.as_ref(), password).map_err(|e| match e {
                 crate::notecrypt::UnlockError::WrongPassword => ApiError::new(ErrorCode::PermissionDenied, "Wrong password."),
-                crate::notecrypt::UnlockError::Unsupported => ApiError::unsupported(
-                    "Your password is correct, but this note uses an encryption format BlackBubbles can't read yet. Open it on your iPhone or Mac.",
-                ),
+                crate::notecrypt::UnlockError::Unsupported => {
+                    eprintln!("notes: unlock {id}: password verified, no known construction decrypts the note");
+                    ApiError::unsupported(
+                        "Your password is correct, but this note uses an encryption format BlackBubbles can't read yet. Open it on your iPhone or Mac.",
+                    )
+                }
+                crate::notecrypt::UnlockError::KeyOnly(how) => {
+                    eprintln!("notes: unlock {id}: note key unwrapped ({how}) but the body didn't decrypt");
+                    ApiError::unsupported(
+                        "Your password is correct and the note's key unlocked, but its text didn't decrypt. BlackBubbles can't read this note yet.",
+                    )
+                }
                 crate::notecrypt::UnlockError::Corrupt => missing(),
             })?;
+            eprintln!("notes: unlock {id}: decrypted via {how}");
             let body = decode_body(&plain).ok_or_else(missing)?;
             Ok(Response::Note(Note { summary, body }))
+        })
+    }
+
+    /// `NoteCryptoDump`: every stored field of a *locked* note, its note-data row, the
+    /// accounts it points at and their account-data rows, as JSON with blobs in hex. The body
+    /// stays encrypted; this is for working out a format offline (`examples/note_probe.rs`).
+    pub fn crypto_dump(&self, id: &str) -> Result<Response, ApiError> {
+        let pk = pk_from_id(id).ok_or_else(|| ApiError::not_found("note"))?;
+        self.with_conn(|conn, s| {
+            let (_, locked) = conn
+                .query_row(&Self::summary_sql(s, "n.Z_PK = ?1"), [pk], |r| Self::summary(s, r))
+                .optional()
+                .map_err(sql_err)?
+                .ok_or_else(|| ApiError::not_found("note"))?;
+            if !locked {
+                return Err(ApiError::new(ErrorCode::BadRequest, "Only locked notes can be dumped."));
+            }
+            let note = row_json(conn, &format!("SELECT * FROM {OBJECTS} WHERE Z_PK = ?1"), pk)?;
+            let note_data = row_json(conn, "SELECT * FROM ZICNOTEDATA WHERE ZNOTE = ?1", pk)?;
+            // Accounts: every ZACCOUNT* the note points at, plus its folder's owner.
+            let mut account_pks: Vec<i64> = note
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter(|(k, _)| k.starts_with("ZACCOUNT") && !k.starts_with("ZACCOUNTNAME"))
+                .filter_map(|(_, v)| v.as_i64())
+                .collect();
+            if let (Some(owner), Some(folder)) = (s.folder_owner, note.get("ZFOLDER").and_then(|v| v.as_i64()))
+                && let Ok(a) = conn.query_row(&format!("SELECT {owner} FROM {OBJECTS} WHERE Z_PK = ?1"), [folder], |r| r.get::<_, i64>(0))
+            {
+                account_pks.push(a);
+            }
+            account_pks.sort();
+            account_pks.dedup();
+            let mut accounts = serde_json::Map::new();
+            let mut account_data = serde_json::Map::new();
+            for a in account_pks {
+                let row = row_json(conn, &format!("SELECT * FROM {OBJECTS} WHERE Z_PK = ?1"), a)?;
+                if let Some(d) = row.get("ZACCOUNTDATA").and_then(|v| v.as_i64()) {
+                    account_data.insert(d.to_string(), row_json(conn, &format!("SELECT * FROM {OBJECTS} WHERE Z_PK = ?1"), d)?);
+                }
+                accounts.insert(a.to_string(), row);
+            }
+            let dump = serde_json::json!({
+                "note_id": id,
+                "note": note,
+                "note_data": note_data,
+                "accounts": accounts,
+                "account_data": account_data,
+            });
+            Ok(Response::Diagnostics(serde_json::to_string_pretty(&dump).map_err(|e| ApiError::internal(e.to_string()))?))
         })
     }
 
@@ -424,6 +498,28 @@ impl Notes {
             }
         });
     }
+}
+
+/// One row as a JSON object of its non-null columns; blobs as `{"hex": …}`.
+fn row_json(conn: &Connection, sql: &str, pk: i64) -> Result<serde_json::Value, ApiError> {
+    use rusqlite::types::ValueRef;
+    let mut stmt = conn.prepare(sql).map_err(sql_err)?;
+    let names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let mut rows = stmt.query([pk]).map_err(sql_err)?;
+    let mut out = serde_json::Map::new();
+    if let Some(row) = rows.next().map_err(sql_err)? {
+        for (i, name) in names.iter().enumerate() {
+            let value = match row.get_ref(i).map_err(sql_err)? {
+                ValueRef::Null => continue,
+                ValueRef::Integer(n) => n.into(),
+                ValueRef::Real(f) => f.into(),
+                ValueRef::Text(t) => String::from_utf8_lossy(t).into(),
+                ValueRef::Blob(b) => serde_json::json!({ "hex": b.iter().map(|x| format!("{x:02x}")).collect::<String>() }),
+            };
+            out.insert(name.clone(), value);
+        }
+    }
+    Ok(out.into())
 }
 
 #[cfg(test)]

@@ -65,6 +65,11 @@ pub enum Request {
     DeleteNote { id: String },
     /// Structure/count facts about the Mac's Apple databases, for debugging.
     Diagnose,
+    /// Every stored field of one locked note (and its account) as JSON, blobs in hex, for
+    /// working out an encryption format offline (`note-probe`). Answered with `Diagnostics`.
+    /// Still encrypted: no password or key leaves the Mac. Appended last, so older clients
+    /// and servers keep decoding every other request.
+    NoteCryptoDump { id: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

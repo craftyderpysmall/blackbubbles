@@ -9,7 +9,8 @@ mod diagnose;
 pub mod findmy;
 pub mod messages;
 pub mod notes;
-mod notecrypt;
+#[doc(hidden)]
+pub mod notecrypt;
 mod typedstream;
 mod util;
 pub mod voicememos;
@@ -114,6 +115,7 @@ impl Backend for MacBackend {
                 &self.messages.handles().unwrap_or_default(),
                 self.voice_memos.dir(),
             ))),
+            Request::NoteCryptoDump { id } => self.notes.crypto_dump(&id),
             Request::ListContacts => self.contacts.names(&self.messages.handles()?),
             Request::ListFindMyDevices { include_family } => self.findmy.list(include_family),
             Request::GetBlob { kind: BlobKind::Attachment, id, offset, len } => self.messages.attachment_blob(&id, offset, len),

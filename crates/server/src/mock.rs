@@ -408,6 +408,7 @@ impl Backend for MockBackend {
                 Response::Ok
             }
             Request::Diagnose => Response::Diagnostics("mock server: nothing to diagnose".into()),
+            Request::NoteCryptoDump { .. } => Response::Diagnostics("{}".into()),
             Request::ListContacts => Response::Contacts(vec![ContactName { handle: "+15551230003".into(), name: "Taylor Kim".into() }]),
             Request::ListVoiceMemos => Response::VoiceMemos(
                 (1..=3)
