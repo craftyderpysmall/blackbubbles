@@ -70,7 +70,9 @@ impl Reminders {
     }
 
     fn with_store<T>(&self, f: impl FnOnce(&EKEventStore) -> Result<T, ApiError>) -> Result<T, ApiError> {
-        let mut guard = self.store.lock().unwrap();
+        let mut guard = crate::lock_within(&self.store, Duration::from_secs(15)).ok_or_else(|| {
+            ApiError::internal("Reminders on the Mac isn't responding (an EventKit call is stuck). Restart bbd on the Mac.")
+        })?;
         if guard.is_none() {
             let store = unsafe { EKEventStore::new() };
             let status = unsafe { EKEventStore::authorizationStatusForEntityType(EKEntityType::Reminder) };
@@ -187,15 +189,13 @@ impl Reminders {
 
     /// Same fingerprint poll as Calendar: EventKit's change notification needs a run loop.
     pub fn watch(&self, sink: EventSink) {
+        // One long-lived store, never released (see `crate::run_main_loop`): with the main
+        // run loop running it follows changes from the iPhone itself.
+        let reminders = Reminders::new();
         std::thread::spawn(move || {
             let mut last: Option<u64> = None;
             loop {
                 std::thread::sleep(Duration::from_secs(10));
-                // A fresh store each poll: a long-lived one on a thread without a run loop
-                // never hears about changes from the iPhone, and calling `reset()` /
-                // `refreshSourcesIfNecessary()` on it hung bbd (2026-11-07). Creating a store
-                // is what bbd's startup does, so it's known to be safe.
-                let reminders = Reminders::new();
                 let Ok(Response::Reminders(list)) = reminders.reminders(None, false) else { continue };
                 let fingerprint = list.iter().fold(list.len() as u64, |h, r| {
                     r.id.bytes()

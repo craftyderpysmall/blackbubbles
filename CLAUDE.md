@@ -165,8 +165,9 @@ Behaviour:
 - **Toasts:** bottom-right cards.
 - **Times:** 12-hour American ("2:05 PM") everywhere, by the owner's request (`format.ts`).
 - **Right-click:** the web view's own menu (Reload, Inspect Element…) is suppressed app-wide except in text fields and on selected text (`main.tsx`). Use Radix context menus for real menus.
-- **EventKit freshness:** a long-lived `EKEventStore` on a thread without a run loop never sees changes made on the iPhone, so the Calendar and Reminders watchers create a **fresh store every poll** (10 s). Never call `reset()` or `refreshSourcesIfNecessary()` on a store in bbd: it hung every EventKit request forever (2026-11-07; the store mutex stays held), most likely because EventKit waits on the main thread, which bbd doesn't run. The request path keeps one long-lived store, which the owner confirmed returns current data.
+- **EventKit and the main run loop:** bbd's main thread runs the Core Foundation run loop (`bb_mac::run_main_loop`); the server runs on its own thread (real backend on macOS only). EventKit does part of its work on the main queue: before, with tokio on the main thread, `reset()`/`refreshSourcesIfNecessary()` and even *releasing* an `EKEventStore` hung every later EventKit call, and a long-lived store never saw iPhone changes (2026-11-07, two broken builds). Each of Calendar, Reminders and their watchers keeps one long-lived store (never released); watchers poll every 10 s. `with_store` gives up after 15 s with "isn't responding" instead of hanging. Unverified on the Mac until the owner rebuilds.
 - **Primary process:** whichever process holds `primary.lock` in the config dir does autofill and notifications. That's `blackbubbles daemon` if it's running, otherwise the window. The daemon reloads notification settings when the config file changes.
+- **After installing a new package, restart the daemon** (`systemctl --user restart blackbubbles`): a running daemon keeps the old binary, and after a protocol bump the Mac rejects it every ~11 s ("protocol version mismatch" in bbd.log).
 
 ## Working agreements
 

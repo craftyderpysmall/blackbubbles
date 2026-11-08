@@ -43,7 +43,9 @@ impl Calendar {
     }
 
     fn with_store<T>(&self, f: impl FnOnce(&EKEventStore) -> Result<T, ApiError>) -> Result<T, ApiError> {
-        let mut guard = self.store.lock().unwrap();
+        let mut guard = crate::lock_within(&self.store, Duration::from_secs(15)).ok_or_else(|| {
+            ApiError::internal("Calendar on the Mac isn't responding (an EventKit call is stuck). Restart bbd on the Mac.")
+        })?;
         if guard.is_none() {
             let store = unsafe { EKEventStore::new() };
             let status = unsafe { EKEventStore::authorizationStatusForEntityType(EKEntityType::Event) };
@@ -141,15 +143,13 @@ impl Calendar {
     /// EventKit's change notification needs a run loop; a fingerprint poll is simpler
     /// and cheap: the events over the next 60 days.
     pub fn watch(&self, sink: EventSink) {
+        // One long-lived store, never released (see `crate::run_main_loop`): with the main
+        // run loop running it follows changes from the iPhone itself.
+        let calendar = Calendar::new();
         std::thread::spawn(move || {
             let mut last: Option<u64> = None;
             loop {
                 std::thread::sleep(Duration::from_secs(10));
-                // A fresh store each poll: a long-lived one on a thread without a run loop
-                // never hears about changes from the iPhone, and calling `reset()` /
-                // `refreshSourcesIfNecessary()` on it hung bbd (2026-11-07). Creating a store
-                // is what bbd's startup does, so it's known to be safe.
-                let calendar = Calendar::new();
                 let now = crate::now_ms();
                 let Ok(Response::Events(events)) = calendar.events(now - 86_400_000, now + 60 * 86_400_000) else { continue };
                 let fingerprint = events.iter().fold(events.len() as u64, |h, e| {

@@ -130,8 +130,24 @@ fn main() -> Result<()> {
                 real_backend(&dir)?
             };
             let identity = bb_net::Identity::load_or_create(&dir)?;
+            let name = name.unwrap_or_else(local_host_name);
+            // On the Mac, the main thread must run the Cocoa run loop (EventKit needs it; see
+            // bb_mac::run_main_loop), so the server runs on its own thread.
+            #[cfg(target_os = "macos")]
+            if !mock {
+                std::thread::spawn(move || {
+                    let result = tokio::runtime::Runtime::new()
+                        .map_err(anyhow::Error::from)
+                        .and_then(|rt| rt.block_on(serve(bind, identity, store, backend, name)));
+                    if let Err(err) = &result {
+                        eprintln!("Error: {err:?}");
+                    }
+                    std::process::exit(i32::from(result.is_err()));
+                });
+                bb_mac::run_main_loop();
+            }
             let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(serve(bind, identity, store, backend, name.unwrap_or_else(local_host_name)))
+            runtime.block_on(serve(bind, identity, store, backend, name))
         }
     }
 }

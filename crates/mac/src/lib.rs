@@ -27,6 +27,38 @@ use std::sync::Arc;
 
 use bb_proto::{ApiError, Backend, BlobKind, EventSink, Request, Response};
 
+/// Serve the main thread's run loop, forever. Cocoa frameworks do part of their work on the
+/// main queue/run loop: EventKit refreshes its cache from change notifications there and
+/// releases or resets a store through it. Without one (bbd used to run tokio on the main
+/// thread), `reset()` and releasing a store hung every EventKit call, and a long-lived
+/// store never saw changes made on the iPhone (2026-11-07).
+#[cfg(target_os = "macos")]
+pub fn run_main_loop() -> ! {
+    use objc2_core_foundation::{CFRunLoop, CFRunLoopRunResult, kCFRunLoopDefaultMode};
+    loop {
+        // With no sources yet the loop returns at once; don't spin.
+        if CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, 60.0, false) == CFRunLoopRunResult::Finished {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+}
+
+/// Lock an EventKit store's mutex, giving up after `timeout`: if an EventKit call ever
+/// hangs, later requests fail with a message instead of spinning forever.
+pub(crate) fn lock_within<T>(m: &std::sync::Mutex<T>, timeout: std::time::Duration) -> Option<std::sync::MutexGuard<'_, T>> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match m.try_lock() {
+            Ok(g) => return Some(g),
+            Err(std::sync::TryLockError::Poisoned(p)) => return Some(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        }
+    }
+}
+
 pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64
 }
