@@ -133,6 +133,7 @@ fn main() -> Result<()> {
             // Pick up notification settings changed in the window without a restart.
             let modified = || config::path().ok().and_then(|p| std::fs::metadata(p).ok()).and_then(|m| m.modified().ok());
             let mut seen = modified();
+            conn::EXIT_WHEN_OUTDATED.store(true, std::sync::atomic::Ordering::Relaxed);
             info!("BlackBubbles daemon running");
             runtime.block_on(async {
                 let mut last = None;

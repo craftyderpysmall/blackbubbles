@@ -188,6 +188,15 @@ async fn run(inner: Arc<Inner>, server: ServerConfig, rx: mpsc::UnboundedReceive
     }
 }
 
+/// Set by `blackbubbles daemon`: exit when the Mac rejects our protocol version and the
+/// installed binary has been replaced (a package upgrade), so systemd restarts the new one.
+pub static EXIT_WHEN_OUTDATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the running executable was replaced on disk (Linux shows "(deleted)").
+fn binary_replaced() -> bool {
+    std::fs::read_link("/proc/self/exe").is_ok_and(|p| p.to_string_lossy().ends_with(" (deleted)"))
+}
+
 async fn connect_loop(inner: &Arc<Inner>, server: ServerConfig, mut rx: mpsc::UnboundedReceiver<(Request, Reply)>) {
     let mut backoff = Duration::from_secs(1);
     loop {
@@ -196,7 +205,19 @@ async fn connect_loop(inner: &Arc<Inner>, server: ServerConfig, mut rx: mpsc::Un
         let result = session(inner, &server, &mut rx, &mut connected).await;
         match result {
             Ok(()) => return, // the client was dropped
-            Err(err) => inner.set_status(Status::Disconnected(format!("{err:#}"))),
+            Err(err) => {
+                let message = format!("{err:#}");
+                if EXIT_WHEN_OUTDATED.load(std::sync::atomic::Ordering::Relaxed)
+                    && message.contains("protocol version mismatch")
+                    && binary_replaced()
+                {
+                    // The daemon outlived a package upgrade: exit so systemd
+                    // (Restart=on-failure) starts the new binary.
+                    eprintln!("blackbubbles: the Mac speaks a newer protocol and this binary was replaced; exiting to restart");
+                    std::process::exit(75);
+                }
+                inner.set_status(Status::Disconnected(message))
+            }
         }
         if connected {
             backoff = Duration::from_secs(1);
