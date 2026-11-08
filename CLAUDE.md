@@ -52,6 +52,7 @@ The owner's Mac is **set up and running `bbd`** (macOS, `users-MacBook-Pro.local
 Confirmed working by the owner on real data:
 - Messages, with contact names (the number-as-`display_name` bug is fixed)
 - Find My sign-in and devices, and the family toggle. The 2FA pop-up never arrives for this account, and their iOS has no "Get Verification Code"; `findmy-login` → type `sms`.
+  - The iCloud web session expires every so often ("session expired (421 Misdirected Request)"). Since 2026-11-07 `Session::reauthenticate` tries `validate` (cookies, saved after every refresh), then `accountLogin`, then, if `findmy-login` was told to remember the password (`icloud/credentials.json`, mode 600), an SRP sign-in with the trust token, which needs no 2FA while Apple trusts it. Password sign-ins are rate-limited to one per 10 min, and a rejected password is deleted at once (never retried: account lockout). bbd drops its session after an error, so a new `findmy-login` takes effect without a restart. Unverified on real data until the next expiry.
 - Notes list, edit and Delete (Delete needs bbd's Automation grant for Notes, which it has)
 
 Fixed from real data, waiting for the owner's next update to confirm:

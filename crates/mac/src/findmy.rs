@@ -30,7 +30,15 @@ impl FindMy {
         if !session.is_signed_in() {
             return Err("Find My is not signed in; run `bbd findmy-login <apple id>` on the Mac".into());
         }
-        let devices = session.devices(include_family).map_err(|e| format!("{e:#}"))?;
+        let devices = match session.devices(include_family) {
+            Ok(devices) => devices,
+            Err(err) => {
+                // Reload from disk next time, so a `bbd findmy-login` run meanwhile takes effect
+                // without restarting bbd.
+                *guard = None;
+                return Err(format!("{err:#}"));
+            }
+        };
         Ok(devices
             .into_iter()
             .map(|d| FindMyDevice {

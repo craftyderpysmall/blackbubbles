@@ -1,7 +1,13 @@
 //! iCloud web sign-in and the Find My device list (the same API icloud.com uses).
 //!
 //! `interactive_login` runs once (it needs the 2FA code). After that the session token
-//! and trust token are reused; `Session::devices` re-validates automatically.
+//! and trust token are reused; `Session::devices` re-validates automatically:
+//! 1. `validate` with the iCloud web cookies (they rotate; we save them after every call),
+//! 2. `accountLogin` with the Apple ID session token,
+//! 3. if the owner chose to remember the password, a fresh SRP sign-in with the trust
+//!    token, which Apple accepts without a new 2FA code while this "browser" is trusted.
+//!    At most once per [`SIGNIN_EVERY`], and a rejected password is forgotten at once, so a
+//!    changed password can't lock the account.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use reqwest::blocking::{Client, RequestBuilder, Response};
-use reqwest_cookie_store::{CookieStore, CookieStoreMutex};
+use reqwest_cookie_store::CookieStoreMutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -20,6 +26,16 @@ const AUTH: &str = "https://idmsa.apple.com/appleauth/auth";
 const SETUP: &str = "https://setup.icloud.com/setup/ws/1";
 const WIDGET_KEY: &str = "d39ba9916b7251055b22c7f910e2ea796ee65e98b2ddecea8f5dde8d9d1a815d";
 const BUILD: &str = "clientBuildNumber=2420Project47&clientMasteringNumber=2420B16";
+/// Minimum gap between automatic password sign-ins.
+pub const SIGNIN_EVERY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+static LAST_SIGNIN: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// The Apple ID and password, kept (mode 600) only if the owner said yes in `findmy-login`.
+#[derive(Serialize, Deserialize)]
+struct Credentials {
+    apple_id: String,
+    password: String,
+}
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct State {
@@ -60,7 +76,7 @@ impl Session {
         let store = std::fs::File::open(dir.join("cookies.json"))
             .ok()
             .and_then(|f| reqwest_cookie_store::CookieStore::load_json(std::io::BufReader::new(f)).ok())
-            .unwrap_or_else(CookieStore::default);
+            .unwrap_or_default();
         let cookies = Arc::new(CookieStoreMutex::new(store));
         let http = Client::builder()
             .cookie_provider(cookies.clone())
@@ -229,15 +245,75 @@ impl Session {
             }))
             .send()?;
         if !reply.status().is_success() {
-            bail!("iCloud session expired ({}); run `bbd findmy-login` again", reply.status());
+            bail!("iCloud session expired ({}); run `bbd findmy-login` on the Mac again", reply.status());
         }
-        let data: Value = reply.json()?;
+        self.absorb_account(&reply.json()?)
+    }
+
+    /// Re-check the iCloud web cookies (what icloud.com does on every page load).
+    fn validate(&mut self) -> Result<()> {
+        let reply = self
+            .http
+            .post(format!("{SETUP}/validate?{BUILD}&clientId={}", self.state.client_id))
+            .header("Origin", "https://www.icloud.com")
+            .header("Referer", "https://www.icloud.com/")
+            .body("null")
+            .send()?;
+        if !reply.status().is_success() {
+            bail!("validate: {}", reply.status());
+        }
+        self.absorb_account(&reply.json()?)
+    }
+
+    fn absorb_account(&mut self, data: &Value) -> Result<()> {
         self.state.dsid = data.pointer("/dsInfo/dsid").and_then(|v| v.as_str().map(str::to_owned).or_else(|| v.as_u64().map(|n| n.to_string())));
         self.state.findme_url = data.pointer("/webservices/findme/url").and_then(Value::as_str).map(str::to_owned);
         if self.state.findme_url.is_none() {
             bail!("this account has no Find My web service");
         }
         self.save()
+    }
+
+    fn credentials(&self) -> Option<Credentials> {
+        std::fs::read(self.dir.join("credentials.json")).ok().and_then(|b| serde_json::from_slice(&b).ok())
+    }
+
+    /// Get a working iCloud web session back without the owner (see the module docs).
+    fn reauthenticate(&mut self) -> Result<()> {
+        if self.validate().is_ok() {
+            tracing::info!("findmy: iCloud session revalidated");
+            return Ok(());
+        }
+        let expired = match self.account_login() {
+            Ok(()) => {
+                tracing::info!("findmy: iCloud session renewed with the session token");
+                return Ok(());
+            }
+            Err(err) => err,
+        };
+        let Some(creds) = self.credentials() else { return Err(expired) };
+        {
+            let mut last = LAST_SIGNIN.lock().unwrap();
+            if last.is_some_and(|t| t.elapsed() < SIGNIN_EVERY) {
+                return Err(expired.context("signing in again shortly"));
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        match self.sign_in(&creds.apple_id, &creds.password) {
+            Ok(false) => {}
+            Ok(true) => bail!("iCloud wants a new 2FA code (Apple stopped trusting this Mac's sign-in); run `bbd findmy-login` on the Mac again"),
+            Err(err) => {
+                if format!("{err}").contains("rejected the Apple ID or password") {
+                    // Never retry a wrong password: Apple locks the account after a few.
+                    let _ = std::fs::remove_file(self.dir.join("credentials.json"));
+                    bail!("Apple rejected the saved password (changed?), so it was forgotten; run `bbd findmy-login` on the Mac again");
+                }
+                return Err(err);
+            }
+        }
+        self.account_login()?;
+        tracing::info!("findmy: signed in to iCloud again with the saved password");
+        Ok(())
     }
 
     /// `fmly` is iCloud's switch for including Family Sharing members' devices.
@@ -255,14 +331,16 @@ impl Session {
     /// Devices on the account, plus Family Sharing members' when `include_family`.
     pub fn devices(&mut self, include_family: bool) -> Result<Vec<Device>> {
         if self.state.findme_url.is_none() {
-            self.account_login()?;
+            self.reauthenticate()?;
         }
         let mut reply = self.refresh_client(include_family)?;
         if matches!(reply.status().as_u16(), 401 | 421 | 450) {
-            self.account_login()?;
+            self.reauthenticate()?;
             reply = self.refresh_client(include_family)?;
         }
         let data: Value = reply.error_for_status()?.json()?;
+        // iCloud rotates its web cookies; keep the newest so a bbd restart can revalidate.
+        self.save()?;
         Ok(parse_devices(&data))
     }
 }
@@ -317,9 +395,12 @@ fn trusted_phones(auth: &Value) -> Vec<TrustedPhone> {
 /// Sign in, asking `ask` for the 2FA code if needed, and save the session.
 ///
 /// `ask(prompt)` reads one line. Answering `sms` texts the code to the first trusted phone
-/// number instead of waiting for the device pop-up.
-pub fn interactive_login(dir: &Path, apple_id: &str, password: &str, mut ask: impl FnMut(&str) -> Result<String>) -> Result<()> {
+/// number instead of waiting for the device pop-up. `remember` keeps the password (mode 600)
+/// so bbd can sign itself back in when iCloud's session expires; otherwise it's forgotten.
+pub fn interactive_login(dir: &Path, apple_id: &str, password: &str, remember: bool, mut ask: impl FnMut(&str) -> Result<String>) -> Result<()> {
     let mut session = Session::open(dir)?;
+    let saved = dir.join("credentials.json");
+    let _ = std::fs::remove_file(&saved);
     if session.sign_in(apple_id, password)? {
         let (phones, no_devices) = match session.request_push() {
             Ok(found) => found,
@@ -355,7 +436,11 @@ pub fn interactive_login(dir: &Path, apple_id: &str, password: &str, mut ask: im
             }
         }
     }
-    session.account_login()
+    session.account_login()?;
+    if remember {
+        crate::write_private(&saved, &serde_json::to_vec(&Credentials { apple_id: apple_id.into(), password: password.into() })?)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

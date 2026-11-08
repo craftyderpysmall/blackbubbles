@@ -118,8 +118,13 @@ fn main() -> Result<()> {
         Command::FindmyLogin { apple_id } => {
             let password = rpassword_prompt("Apple ID password: ")?;
             let icloud_dir = dir.join("icloud");
+            let answer = ask(
+                "iCloud's web session expires every so often. Remember the password on this Mac so Find My\n\
+                 signs itself back in without a new code? (kept in a file only your user can read) [Y/n]: ",
+            )?;
+            let remember = !answer.trim().to_ascii_lowercase().starts_with('n');
             eprintln!("{CODE_HELP}");
-            bb_findmy::icloud::interactive_login(&icloud_dir, &apple_id, &password, ask)?;
+            bb_findmy::icloud::interactive_login(&icloud_dir, &apple_id, &password, remember, ask)?;
             println!("Signed in to iCloud. Your Apple devices will now appear in Find My.");
             Ok(())
         }
