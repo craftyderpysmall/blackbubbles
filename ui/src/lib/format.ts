@@ -8,18 +8,19 @@ const dayDiff = (a: Date, b: Date) => {
   return Math.round((start(b) - start(a)) / 86_400_000);
 };
 
-const hm = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+// American 12-hour clock ("2:05 PM"), as the owner asked.
+const hm = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
 const weekday = new Intl.DateTimeFormat(undefined, { weekday: "short" });
 const monthDay = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
 const monthDayYear = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" });
 const longDay = new Intl.DateTimeFormat(undefined, { weekday: "long", month: "long", day: "numeric" });
 const longStamp = new Intl.DateTimeFormat(undefined, {
-  weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+  weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
 });
 
 export const time = (ms: Timestamp) => hm.format(ms);
 
-/** "14:05" today, "Tue" this week, else "Mar 3" (or "Mar 3, 2025"). */
+/** "2:05 PM" today, "Tue" this week, else "Mar 3" (or "Mar 3, 2025"). */
 export function shortTime(ms: Timestamp): string {
   const t = new Date(ms);
   const now = new Date();

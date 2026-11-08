@@ -19,10 +19,14 @@ const queryClient = new QueryClient({
   },
 });
 
-// The web view's own image menu ("Save Image As…", "Copy Image Address") can't handle
-// images served over bb://. Attachments have their own menu; Save As… is in the viewer.
+// The web view's own menu (Reload, Inspect Element, an image menu that can't save bb://
+// images) doesn't belong in an app. Keep it only where it's useful: text fields (paste) and
+// selected text (copy). Our own menus (attachments, notes) are Radix context menus.
 document.addEventListener("contextmenu", (e) => {
-  if (e.target instanceof HTMLImageElement) e.preventDefault();
+  const target = e.target instanceof Element ? e.target : null;
+  const editable = target?.closest("input, textarea, [contenteditable=''], [contenteditable='true']");
+  const selected = !!window.getSelection()?.toString() && !(target instanceof HTMLImageElement);
+  if (!editable && !selected) e.preventDefault();
 });
 
 const root = createRoot(document.getElementById("root")!);

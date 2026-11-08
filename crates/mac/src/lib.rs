@@ -108,7 +108,7 @@ impl Backend for MacBackend {
             }
             Request::ListVoiceMemos => self.voice_memos.list(),
             Request::UnlockNote { id, password } => self.notes.unlock(&id, &password),
-            Request::DeleteNote { id } => notes::Notes::delete(&id),
+            Request::DeleteNote { id } => self.notes.delete(&id),
             Request::Diagnose => Ok(Response::Diagnostics(diagnose::report(
                 self.notes.db_path(),
                 &self.contacts,

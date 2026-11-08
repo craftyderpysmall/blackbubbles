@@ -37,6 +37,12 @@ export interface Chat {
   service: Service;
   last_message: Message | null;
   my_address: string | null;
+  /** Incoming messages not yet read on any Apple device. */
+  unread: number;
+}
+export interface UnreadCount {
+  chat_guid: string;
+  count: number;
 }
 export interface Calendar {
   id: string;
@@ -138,6 +144,7 @@ export interface FindMyDevice {
 
 export type ServerEvent =
   | { NewMessage: Message }
+  | { UnreadChanged: UnreadCount[] }
   | "CalendarChanged"
   | "NotesChanged"
   | "VoiceMemosChanged"

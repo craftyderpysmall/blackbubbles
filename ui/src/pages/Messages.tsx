@@ -44,10 +44,17 @@ export function MessagesPage() {
   }, [boot.dev_open_first_chat, chats.data]);
 
   const chat = chats.data?.find((c) => c.guid === selected) ?? null;
+  const [seen, markSeen] = useSeen();
+  // Opening a chat here can't mark it read on the Mac (Messages' AppleScript has no read
+  // state), so remember it locally: the dot hides until something newer arrives.
+  const lastDate = chat?.last_message?.date ?? 0;
+  useEffect(() => {
+    if (selected) markSeen(selected, lastDate);
+  }, [selected, lastDate, markSeen]);
   const narrow = width > 0 && width < NARROW_BELOW;
   const listWidth = Math.min(360, Math.max(280, width * 0.3));
 
-  const list = <ChatList chats={chats.data} loading={chats.isLoading} error={chats.error} selected={selected} onSelect={setSelected} />;
+  const list = <ChatList chats={chats.data} seen={seen} loading={chats.isLoading} error={chats.error} selected={selected} onSelect={setSelected} />;
   return (
     <div ref={ref} className="flex h-full gap-4">
       {(!narrow || !chat) && (
@@ -68,7 +75,37 @@ export function MessagesPage() {
   );
 }
 
-function ChatList({ chats, loading, error, selected, onSelect }: { chats?: Chat[]; loading: boolean; error: unknown; selected: string | null; onSelect: (g: string) => void }) {
+const SEEN_KEY = "bb.seenChats";
+
+/** When each chat was last opened here (guid → ms), kept in localStorage. */
+function useSeen(): [Record<string, number>, (guid: string, at: number) => void] {
+  const [seen, setSeen] = useState<Record<string, number>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(SEEN_KEY) ?? "{}") as Record<string, number>;
+    } catch {
+      return {};
+    }
+  });
+  const mark = useCallback((guid: string, at: number) => {
+    setSeen((prev) => {
+      const when = Math.max(at, Date.now());
+      if ((prev[guid] ?? 0) >= at) return prev;
+      const next = { ...prev, [guid]: when };
+      try {
+        localStorage.setItem(SEEN_KEY, JSON.stringify(next));
+      } catch {
+        // Storage unavailable: still works for this session.
+      }
+      return next;
+    });
+  }, []);
+  return [seen, mark];
+}
+
+/** Unread on the Mac, and nothing newer than when it was last opened here. */
+const isUnread = (chat: Chat, seen: Record<string, number>) => chat.unread > 0 && (chat.last_message?.date ?? 0) > (seen[chat.guid] ?? 0);
+
+function ChatList({ chats, seen, loading, error, selected, onSelect }: { chats?: Chat[]; seen: Record<string, number>; loading: boolean; error: unknown; selected: string | null; onSelect: (g: string) => void }) {
   const [filter, setFilter] = useState("");
   const name = useNames();
   const scroller = useRef<HTMLDivElement>(null);
@@ -84,7 +121,7 @@ function ChatList({ chats, loading, error, selected, onSelect }: { chats?: Chat[
       <div className="flex flex-col gap-3 p-4 pb-2">
         <div className="flex items-baseline justify-between">
           <h1 className="text-[15px] font-semibold text-fg">Messages</h1>
-          {chats && <span className="text-xs text-subtle">{chats.length} chats</span>}
+          {chats && <span className="text-xs text-subtle">{unreadLabel(chats, seen)}</span>}
         </div>
         <SearchInput value={filter} onChange={setFilter} placeholder="Search" />
       </div>
@@ -101,7 +138,7 @@ function ChatList({ chats, loading, error, selected, onSelect }: { chats?: Chat[
               const chat = shown[row.index];
               return (
                 <div key={chat.guid} style={{ position: "absolute", top: 0, left: 0, right: 0, height: row.size, transform: `translateY(${row.start}px)` }}>
-                  <ChatRow chat={chat} name={name} active={chat.guid === selected} onSelect={onSelect} />
+                  <ChatRow chat={chat} name={name} unread={chat.guid !== selected && isUnread(chat, seen)} active={chat.guid === selected} onSelect={onSelect} />
                 </div>
               );
             })}
@@ -112,7 +149,12 @@ function ChatList({ chats, loading, error, selected, onSelect }: { chats?: Chat[
   );
 }
 
-const ChatRow = memo(function ChatRow({ chat, name, active, onSelect }: { chat: Chat; name: NameOf; active: boolean; onSelect: (g: string) => void }) {
+function unreadLabel(chats: Chat[], seen: Record<string, number>) {
+  const n = chats.filter((c) => isUnread(c, seen)).length;
+  return n ? `${n} unread` : `${chats.length} chats`;
+}
+
+const ChatRow = memo(function ChatRow({ chat, name, unread, active, onSelect }: { chat: Chat; name: NameOf; unread: boolean; active: boolean; onSelect: (g: string) => void }) {
   const last = chat.last_message;
   const event = last && groupEventText(last, name);
   const preview = last ? (event ?? (last.text?.trim() || (last.attachments.length ? "Attachment" : ""))) : "";
@@ -124,12 +166,13 @@ const ChatRow = memo(function ChatRow({ chat, name, active, onSelect }: { chat: 
       <Avatar name={chatTitle(chat, name)} size={38} />
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-2">
-          <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-fg">{chatTitle(chat, name)}</span>
-          {last && <span className="shrink-0 text-[11px] text-subtle">{shortTime(last.date)}</span>}
+          <span className={cn("min-w-0 flex-1 truncate text-[13px] text-fg", unread ? "font-semibold" : "font-medium")}>{chatTitle(chat, name)}</span>
+          {last && <span className={cn("shrink-0 text-[11px]", unread ? "font-medium text-fg" : "text-subtle")}>{shortTime(last.date)}</span>}
         </span>
         <span className="flex items-center gap-1.5">
           {isSms(chat) && <span className="shrink-0 rounded-full border border-border px-1.5 text-[10px] leading-4 text-subtle">SMS</span>}
-          <span className="truncate text-xs text-muted">{last?.is_from_me && !event ? `You: ${preview}` : preview}</span>
+          <span className={cn("min-w-0 flex-1 truncate text-xs", unread ? "text-fg" : "text-muted")}>{last?.is_from_me && !event ? `You: ${preview}` : preview}</span>
+          {unread && <span aria-label="Unread" className="size-2 shrink-0 rounded-full bg-fg" />}
         </span>
       </span>
     </button>

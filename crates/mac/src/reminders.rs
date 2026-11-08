@@ -14,7 +14,8 @@ use objc2::runtime::Bool;
 use objc2_event_kit::{EKAlarm, EKAuthorizationStatus, EKCalendar, EKEntityType, EKEventStore, EKReminder};
 use objc2_foundation::{NSArray, NSCalendar, NSCalendarUnit, NSDate, NSDateComponentUndefined, NSDateComponents, NSError, NSString};
 
-struct Store(Retained<EKEventStore>);
+/// The store, and when its cache was last dropped.
+struct Store(Retained<EKEventStore>, std::time::Instant);
 unsafe impl Send for Store {}
 
 pub struct Reminders {
@@ -87,9 +88,21 @@ impl Reminders {
                     ));
                 }
             }
-            *guard = Some(Store(store));
+            *guard = Some(Store(store, std::time::Instant::now()));
         }
-        f(&guard.as_ref().unwrap().0)
+        let store = guard.as_mut().unwrap();
+        // A long-lived EKEventStore on a thread without a run loop never hears about changes
+        // made elsewhere (the iPhone, via iCloud), so its cache stays frozen: changes from
+        // the iPhone only appeared after the client restarted. Pull from the sources and drop
+        // the cache when it's more than a few seconds old.
+        if store.1.elapsed() > Duration::from_secs(5) {
+            unsafe {
+                store.0.refreshSourcesIfNecessary();
+                store.0.reset();
+            }
+            store.1 = std::time::Instant::now();
+        }
+        f(&store.0)
     }
 
     pub fn lists(&self) -> Result<Response, ApiError> {
@@ -191,7 +204,7 @@ impl Reminders {
         std::thread::spawn(move || {
             let mut last: Option<u64> = None;
             loop {
-                std::thread::sleep(Duration::from_secs(30));
+                std::thread::sleep(Duration::from_secs(10));
                 let Ok(Response::Reminders(list)) = reminders.reminders(None, false) else { continue };
                 let fingerprint = list.iter().fold(list.len() as u64, |h, r| {
                     r.id.bytes()

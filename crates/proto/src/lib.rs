@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Milliseconds since the Unix epoch.
 pub type Timestamp = i64;
@@ -67,8 +67,7 @@ pub enum Request {
     Diagnose,
     /// Every stored field of one locked note (and its account) as JSON, blobs in hex, for
     /// working out an encryption format offline (`note-probe`). Answered with `Diagnostics`.
-    /// Still encrypted: no password or key leaves the Mac. Appended last, so older clients
-    /// and servers keep decoding every other request.
+    /// Still encrypted: no password or key leaves the Mac.
     NoteCryptoDump { id: String },
 }
 
@@ -200,6 +199,15 @@ pub enum Event {
     VoiceMemosChanged,
     PhotosChanged,
     RemindersChanged,
+    /// Unread counts changed (read on another device, or a new message). Every chat with
+    /// unread messages; chats not listed have none.
+    UnreadChanged(Vec<UnreadCount>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnreadCount {
+    pub chat_guid: String,
+    pub count: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,6 +227,8 @@ pub struct Chat {
     /// Which of *your* addresses this conversation uses (phone number or email).
     /// Replies always go out from this address.
     pub my_address: Option<String>,
+    /// Incoming messages not yet read on any Apple device (chat.db's `is_read`).
+    pub unread: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

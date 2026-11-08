@@ -12,7 +12,8 @@ use objc2_event_kit::{EKAuthorizationStatus, EKCalendar, EKEntityType, EKEvent, 
 use objc2_foundation::{NSDate, NSError, NSString};
 
 /// EventKit objects are usable from any thread as long as access is serialized.
-struct Store(Retained<EKEventStore>);
+/// The store, and when its cache was last dropped.
+struct Store(Retained<EKEventStore>, std::time::Instant);
 unsafe impl Send for Store {}
 
 pub struct Calendar {
@@ -61,9 +62,21 @@ impl Calendar {
                     ));
                 }
             }
-            *guard = Some(Store(store));
+            *guard = Some(Store(store, std::time::Instant::now()));
         }
-        f(&guard.as_ref().unwrap().0)
+        let store = guard.as_mut().unwrap();
+        // A long-lived EKEventStore on a thread without a run loop never hears about changes
+        // made elsewhere (the iPhone, via iCloud), so its cache stays frozen: changes from
+        // the iPhone only appeared after the client restarted. Pull from the sources and drop
+        // the cache when it's more than a few seconds old.
+        if store.1.elapsed() > Duration::from_secs(5) {
+            unsafe {
+                store.0.refreshSourcesIfNecessary();
+                store.0.reset();
+            }
+            store.1 = std::time::Instant::now();
+        }
+        f(&store.0)
     }
 
     pub fn calendars(&self) -> Result<Response, ApiError> {
@@ -138,14 +151,14 @@ impl Calendar {
         })
     }
 
-    /// EventKit's change notification needs a run loop; a fingerprint poll is simpler and
-    /// cheap: count + latest modification over the next 60 days.
+    /// EventKit's change notification needs a run loop; a fingerprint poll (the
+    /// store refreshes itself in `with_store`) is simpler and cheap: the events over the next 60 days.
     pub fn watch(&self, sink: EventSink) {
         let calendar = Calendar::new();
         std::thread::spawn(move || {
             let mut last: Option<u64> = None;
             loop {
-                std::thread::sleep(Duration::from_secs(30));
+                std::thread::sleep(Duration::from_secs(10));
                 let now = crate::now_ms();
                 let Ok(Response::Events(events)) = calendar.events(now - 86_400_000, now + 60 * 86_400_000) else { continue };
                 let fingerprint = events.iter().fold(events.len() as u64, |h, e| {

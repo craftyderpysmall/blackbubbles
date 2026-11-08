@@ -438,13 +438,30 @@ impl Notes {
         })
     }
 
-    pub fn delete(id: &str) -> Result<Response, ApiError> {
+    /// Move a note to Recently Deleted. AppleScript returns before Notes.app has saved its
+    /// database, so wait (up to 10 s) until the note has left the lists; otherwise the
+    /// client's refetch sees it still there.
+    pub fn delete(&self, id: &str) -> Result<Response, ApiError> {
+        let pk = pk_from_id(id).ok_or_else(|| ApiError::not_found("note"))?;
         util::osascript(
             r#"on run argv
                 tell application "Notes" to delete note id (item 1 of argv)
             end run"#,
             &[id],
         )?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            let listed = self.with_conn(|conn, s| {
+                conn.query_row(&Self::summary_sql(s, "n.Z_PK = ?1"), [pk], |_| Ok(()))
+                    .optional()
+                    .map(|r| r.is_some())
+                    .map_err(sql_err)
+            });
+            if !listed.unwrap_or(false) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
         Ok(Response::Ok)
     }
 
@@ -479,24 +496,33 @@ impl Notes {
     }
 
     /// Emit `NotesChanged` when the newest modification date moves.
+    /// Poll a fingerprint of every Notes object: row count, the sum of Core Data's per-row
+    /// save counter (`Z_OPT`, bumped on *any* change, including a move to Recently Deleted,
+    /// which leaves the modification date alone) and the newest modification date.
     pub fn watch(self: std::sync::Arc<Self>, sink: EventSink) {
         std::thread::spawn(move || {
-            let mut last: Option<f64> = None;
+            let mut last: Option<(i64, i64, f64)> = None;
             loop {
-                std::thread::sleep(Duration::from_secs(5));
-                let newest = self.with_conn(|conn, s| {
-                    conn.query_row(&format!("SELECT MAX({}) FROM {OBJECTS}", s.modified), [], |r| r.get::<_, Option<f64>>(0))
-                        .map_err(sql_err)
-                });
-                if let Ok(newest) = newest {
-                    let newest = newest.unwrap_or(0.0);
-                    if last.is_some_and(|l| l != newest) {
+                std::thread::sleep(Duration::from_secs(2));
+                if let Ok(now) = self.fingerprint() {
+                    if last.is_some_and(|l| l != now) {
                         sink(Event::NotesChanged);
                     }
-                    last = Some(newest);
+                    last = Some(now);
                 }
             }
         });
+    }
+
+    fn fingerprint(&self) -> Result<(i64, i64, f64), ApiError> {
+        self.with_conn(|conn, s| {
+            conn.query_row(
+                &format!("SELECT COUNT(*), IFNULL(SUM(Z_OPT), 0), IFNULL(MAX({}), 0) FROM {OBJECTS}", s.modified),
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(sql_err)
+        })
     }
 }
 

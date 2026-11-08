@@ -58,9 +58,18 @@ export function applyServerEvent(qc: QueryClient, event: ServerEvent) {
       const i = chats.findIndex((c) => c.guid === message.chat_guid);
       if (i < 0) return chats;
       known = true;
-      const chat = { ...chats[i], last_message: message };
+      // Count it at once; the Mac's own count follows in an UnreadChanged.
+      const unread = chats[i].unread + (message.is_from_me || message.group_event ? 0 : 1);
+      const chat = { ...chats[i], last_message: message, unread: message.is_from_me ? 0 : unread };
       return [chat, ...chats.slice(0, i), ...chats.slice(i + 1)];
     });
     if (!known) void qc.invalidateQueries({ queryKey: keys.chats });
+  }
+  if ("UnreadChanged" in event) {
+    const counts = new Map(event.UnreadChanged.map((u) => [u.chat_guid, u.count]));
+    qc.setQueryData<Chat[]>(keys.chats, (chats) => chats?.map((c) => {
+      const unread = counts.get(c.guid) ?? 0;
+      return unread === c.unread ? c : { ...c, unread };
+    }));
   }
 }

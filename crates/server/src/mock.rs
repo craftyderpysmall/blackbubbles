@@ -87,6 +87,7 @@ impl MockBackend {
                 service: *service,
                 last_message: None,
                 my_address: Some(if i == 1 { "me@icloud.com".into() } else { "+15550000000".into() }),
+                unread: if i == 0 { 2 } else { 0 },
             });
         }
         // A group chat with the events Messages records (rename, add, leave).
@@ -117,6 +118,7 @@ impl MockBackend {
             service: Service::IMessage,
             last_message: None,
             my_address: Some("+15550000000".into()),
+            unread: 1,
         });
         let today = now - now.rem_euclid(DAY);
         let events = vec![
@@ -544,6 +546,8 @@ impl Backend for MockBackend {
                 };
                 sink(Event::NewMessage(message));
                 sink(Event::IncomingText { sender: "55512".into(), text, service: Service::Sms });
+                // As if the group chat had been read on the iPhone meanwhile.
+                sink(Event::UnreadChanged(vec![UnreadCount { chat_guid: "SMS;-;55512".into(), count: n }]));
             }
         });
     }

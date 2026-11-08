@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use bb_proto::{ApiError, Attachment, Chat, Event, EventSink, GroupEvent, Message, Response, Service, Timestamp};
+use bb_proto::{ApiError, Attachment, Chat, Event, EventSink, GroupEvent, Message, Response, Service, Timestamp, UnreadCount};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::typedstream;
@@ -150,6 +150,8 @@ impl Messages {
                 .query_map(params![before, limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(6)?)))
                 .and_then(Iterator::collect)
                 .map_err(sql_err)?;
+            let unread: std::collections::HashMap<String, u32> =
+                Self::unread(conn)?.into_iter().map(|u| (u.chat_guid, u.count)).collect();
             let mut chats = Vec::with_capacity(rows.len());
             for (rowid, guid, display_name, identifier, service_name, mine) in rows {
                 let mut handles = conn
@@ -179,10 +181,26 @@ impl Messages {
                 // contact name there, and a number in display_name hid it.
                 let display_name = display_name.filter(|n| !n.trim().is_empty());
                 let my_address = mine.map(|m| m.strip_prefix("E:").or_else(|| m.strip_prefix("P:")).unwrap_or(&m).to_string());
-                chats.push(Chat { guid, display_name, participants, service: service(service_name.as_deref()), last_message, my_address });
+                let unread = unread.get(&guid).copied().unwrap_or(0);
+                chats.push(Chat { guid, display_name, participants, service: service(service_name.as_deref()), last_message, my_address, unread });
             }
             Ok(Response::Chats(chats))
         })
+    }
+
+    /// Unread incoming messages per chat, as Messages counts them: `is_read = 0`, not from
+    /// me, a visible message (no tapbacks or group events). Sorted by chat for comparison.
+    fn unread(conn: &Connection) -> Result<Vec<UnreadCount>, ApiError> {
+        conn.prepare_cached(
+            "SELECT c.guid, COUNT(*) FROM message m JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+             JOIN chat c ON c.ROWID = cmj.chat_id
+             WHERE m.is_read = 0 AND m.is_from_me = 0 AND IFNULL(m.item_type, 0) = 0 AND m.associated_message_type = 0
+             GROUP BY c.guid ORDER BY c.guid",
+        )
+        .map_err(sql_err)?
+        .query_map([], |r| Ok(UnreadCount { chat_guid: r.get(0)?, count: r.get(1)? }))
+        .and_then(Iterator::collect)
+        .map_err(sql_err)
     }
 
     pub fn list_messages(&self, chat_guid: &str, limit: u32, before: Option<Timestamp>) -> Result<Response, ApiError> {
@@ -272,9 +290,21 @@ impl Messages {
     pub fn watch(self: std::sync::Arc<Self>, sink: EventSink) {
         std::thread::spawn(move || {
             let mut last: Option<i64> = None;
+            let mut last_unread: Option<Vec<UnreadCount>> = None;
+            let mut tick: u64 = 0;
             loop {
                 std::thread::sleep(Duration::from_millis(500));
+                tick += 1;
                 let result = self.with_conn(|conn| {
+                    // Read state changes without new rows (read on the iPhone), so poll the
+                    // unread counts too: every 2 s, an indexed query over unread rows only.
+                    if tick.is_multiple_of(4) {
+                        let unread = Self::unread(conn)?;
+                        if last_unread.as_ref().is_some_and(|l| *l != unread) {
+                            sink(Event::UnreadChanged(unread.clone()));
+                        }
+                        last_unread = Some(unread);
+                    }
                     let max: i64 = conn.query_row("SELECT IFNULL(MAX(ROWID), 0) FROM message", [], |r| r.get(0)).map_err(sql_err)?;
                     let Some(prev) = last else {
                         last = Some(max);
@@ -344,7 +374,9 @@ pub(crate) mod tests {
              ALTER TABLE message ADD COLUMN item_type INTEGER DEFAULT 0;
              ALTER TABLE message ADD COLUMN group_action_type INTEGER DEFAULT 0;
              ALTER TABLE message ADD COLUMN other_handle INTEGER DEFAULT 0;
-             ALTER TABLE message ADD COLUMN group_title TEXT;",
+             ALTER TABLE message ADD COLUMN group_title TEXT;
+             ALTER TABLE message ADD COLUMN is_read INTEGER DEFAULT 1;
+             UPDATE message SET is_read = 0 WHERE ROWID IN (3, 4);",
         )
         .unwrap();
     }
@@ -428,6 +460,8 @@ pub(crate) mod tests {
         assert_eq!(chats[1].participants, ["+15550001"]);
         assert_eq!(chats[1].my_address.as_deref(), Some("+15559999"));
         assert_eq!(chats[0].my_address.as_deref(), Some("me@icloud.com"));
+        // Unread: the code text counts; the unread tapback (associated_message_type 2000) doesn't.
+        assert_eq!((chats[0].unread, chats[1].unread), (1, 0));
         // The tapback (associated_message_type 2000) is not the last message.
         assert_eq!(chats[1].last_message.as_ref().unwrap().text.as_deref(), Some("hi back"));
 

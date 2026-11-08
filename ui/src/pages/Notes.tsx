@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowLeft, Check, Lock, LockOpen, NotebookPen, Plus, Trash2 } from "lucide-react";
 import { ContextMenu as CM } from "radix-ui";
-import { api, errorText, type NoteSummary } from "@/lib/bb";
+import { api, errorText, type NoteFolder, type NoteSummary } from "@/lib/bb";
 import { keys } from "@/lib/events";
 import { NARROW_BELOW, useApp, useWidth } from "@/lib/app";
 import { shortTime } from "@/lib/format";
@@ -22,7 +22,8 @@ export default function NotesPage() {
   const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<NoteSummary | null>(null);
-  const [removing, setRemoving] = useState(false);
+  // Notes being deleted: hidden until the Mac has caught up.
+  const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
 
   const folders = useQuery({ queryKey: keys.noteFolders, queryFn: api.noteFolders, enabled: connected });
   const notes = useQuery({ queryKey: [...keys.notes, folder], queryFn: () => api.notes(folder), enabled: connected });
@@ -88,28 +89,39 @@ export default function NotesPage() {
 
   const shown = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    const list = notes.data ?? [];
+    const list = (notes.data ?? []).filter((n) => !pending.has(n.id));
     return q ? list.filter((n) => n.title.toLowerCase().includes(q) || n.snippet.toLowerCase().includes(q)) : list;
-  }, [notes.data, filter]);
+  }, [notes.data, filter, pending]);
 
+  // Deleting goes through AppleScript and Notes.app, which can take a while; the note leaves
+  // every list at once and stays hidden until the Mac has caught up.
   const remove = async () => {
     if (!deleting) return;
-    setRemoving(true);
+    const target = deleting;
+    setDeleting(null);
+    setPending((p) => new Set(p).add(target.id));
+    if (open === target.id) {
+      setOpen(null);
+      setBody("");
+      setSaved("");
+    }
+    qc.setQueriesData<NoteSummary[]>({ queryKey: keys.notes }, (list) => list?.filter((n) => n.id !== target.id));
+    qc.setQueryData<NoteFolder[]>(keys.noteFolders, (list) =>
+      list?.map((f) => (f.id === target.folder_id ? { ...f, count: Math.max(0, f.count - 1) } : f)),
+    );
     try {
-      await api.deleteNote(deleting.id);
-      if (open === deleting.id) {
-        setOpen(null);
-        setBody("");
-        setSaved("");
-      }
+      await api.deleteNote(target.id);
       toast("Moved to Recently Deleted");
-      await qc.invalidateQueries({ queryKey: keys.notes });
-      void qc.invalidateQueries({ queryKey: keys.noteFolders });
-      setDeleting(null);
     } catch (err) {
       toast(`Couldn't delete: ${errorText(err)}`);
     } finally {
-      setRemoving(false);
+      // Either way, the Mac's database is the truth now.
+      await Promise.all([qc.invalidateQueries({ queryKey: keys.notes }), qc.invalidateQueries({ queryKey: keys.noteFolders })]);
+      setPending((p) => {
+        const next = new Set(p);
+        next.delete(target.id);
+        return next;
+      });
     }
   };
 
@@ -198,7 +210,7 @@ export default function NotesPage() {
       >
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setDeleting(null)}>Cancel</Button>
-          <Button variant="primary" icon={Trash2} busy={removing} onClick={() => void remove()}>Delete</Button>
+          <Button variant="primary" icon={Trash2} onClick={() => void remove()}>Delete</Button>
         </div>
       </Dialog>
     </div>
