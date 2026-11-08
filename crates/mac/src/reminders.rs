@@ -14,8 +14,7 @@ use objc2::runtime::Bool;
 use objc2_event_kit::{EKAlarm, EKAuthorizationStatus, EKCalendar, EKEntityType, EKEventStore, EKReminder};
 use objc2_foundation::{NSArray, NSCalendar, NSCalendarUnit, NSDate, NSDateComponentUndefined, NSDateComponents, NSError, NSString};
 
-/// The store, and when its cache was last dropped.
-struct Store(Retained<EKEventStore>, std::time::Instant);
+struct Store(Retained<EKEventStore>);
 unsafe impl Send for Store {}
 
 pub struct Reminders {
@@ -88,21 +87,9 @@ impl Reminders {
                     ));
                 }
             }
-            *guard = Some(Store(store, std::time::Instant::now()));
+            *guard = Some(Store(store));
         }
-        let store = guard.as_mut().unwrap();
-        // A long-lived EKEventStore on a thread without a run loop never hears about changes
-        // made elsewhere (the iPhone, via iCloud), so its cache stays frozen: changes from
-        // the iPhone only appeared after the client restarted. Pull from the sources and drop
-        // the cache when it's more than a few seconds old.
-        if store.1.elapsed() > Duration::from_secs(5) {
-            unsafe {
-                store.0.refreshSourcesIfNecessary();
-                store.0.reset();
-            }
-            store.1 = std::time::Instant::now();
-        }
-        f(&store.0)
+        f(&guard.as_ref().unwrap().0)
     }
 
     pub fn lists(&self) -> Result<Response, ApiError> {
@@ -200,11 +187,15 @@ impl Reminders {
 
     /// Same fingerprint poll as Calendar: EventKit's change notification needs a run loop.
     pub fn watch(&self, sink: EventSink) {
-        let reminders = Reminders::new();
         std::thread::spawn(move || {
             let mut last: Option<u64> = None;
             loop {
                 std::thread::sleep(Duration::from_secs(10));
+                // A fresh store each poll: a long-lived one on a thread without a run loop
+                // never hears about changes from the iPhone, and calling `reset()` /
+                // `refreshSourcesIfNecessary()` on it hung bbd (2026-11-07). Creating a store
+                // is what bbd's startup does, so it's known to be safe.
+                let reminders = Reminders::new();
                 let Ok(Response::Reminders(list)) = reminders.reminders(None, false) else { continue };
                 let fingerprint = list.iter().fold(list.len() as u64, |h, r| {
                     r.id.bytes()

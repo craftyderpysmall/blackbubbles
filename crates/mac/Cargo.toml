@@ -17,6 +17,7 @@ aes-gcm.workspace = true
 pbkdf2.workspace = true
 sha2.workspace = true
 hmac = "0.12"
+plist = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 rusqlite = { workspace = true }

@@ -77,6 +77,10 @@ fn main() {
         }
     }
     let body = blobs.remove("data.ZDATA").expect("no note_data.ZDATA");
+    if let Some(obj) = notecrypt::parse_v2(&body) {
+        probe_v2(&obj, &blobs, password);
+        return;
+    }
     println!("body: {} bytes", body.len());
     for (k, v) in &blobs {
         if v.len() <= 64 {
@@ -199,5 +203,84 @@ fn main() {
     }
     if !found {
         println!("No construction decrypted the body.");
+    }
+}
+
+/// What a decrypted blob looks like, without showing it.
+fn kind(plain: &[u8]) -> String {
+    let what = if plain.starts_with(&[0x1f, 0x8b]) {
+        "gzip"
+    } else if plain.starts_with(b"bplist") {
+        "bplist"
+    } else {
+        "other"
+    };
+    let decoded = bb_mac::notes::decode_body(plain).map(|t| t.chars().count());
+    format!("{} bytes, {what}, note text decodes: {}", plain.len(), decoded.map_or("no".into(), |n| format!("yes ({n} chars)")))
+}
+
+/// Cipher version 2 (ICCryptoEncryptionObject body).
+fn probe_v2(obj: &notecrypt::V2Object, blobs: &Blobs, password: &str) {
+    println!("body is a cipher-version-2 ICCryptoEncryptionObject: salt {} B, {} iterations, wrapped key {} B, metadata {} B, data {} B",
+        obj.salt.len(), obj.iterations, obj.wrapped_key.len(), obj.metadata.len(), obj.data.len());
+    if let Some((salt, iters, key)) = blobs.iter().find(|(k, _)| k.ends_with("ZCRYPTOPASSPHRASEVERIFIER")).and_then(|(_, v)| notecrypt::parse_v2_verifier(v)) {
+        match notecrypt::v2_key(password, &salt, iters, &key) {
+            Some((k, how)) => println!("account v2 verifier: password OK ({how}, {} B key)", k.len()),
+            None => println!("account v2 verifier: password does NOT unwrap it"),
+        }
+    }
+    let iv = blobs.get("data.ZCRYPTOINITIALIZATIONVECTOR").map(Vec::as_slice);
+    let tag = blobs.get("data.ZCRYPTOTAG").map(Vec::as_slice);
+    match notecrypt::decrypt_v2(obj, iv, tag, password) {
+        Ok((plain, how)) => {
+            println!("DECRYPTS with bbd's built-in v2 code: {how}; {}", kind(&plain));
+            return;
+        }
+        Err(e) => println!("bbd's built-in v2 code: {e:?}"),
+    }
+    let Some((key, how)) = notecrypt::v2_key(password, &obj.salt, obj.iterations, &obj.wrapped_key) else {
+        println!("The note's own wrapped key doesn't unwrap with this password; stopping.");
+        return;
+    };
+    println!("note key unwrapped ({how}, {} B); searching body layouts…", key.len());
+    let d = &obj.data;
+    let mut keys: Vec<(&str, Vec<u8>)> = vec![("key", key.clone())];
+    if key.len() == 32 {
+        keys.push(("key[..16]", key[..16].to_vec()));
+        keys.push(("key[16..]", key[16..].to_vec()));
+    }
+    let object_id = plist::Value::from_reader(std::io::Cursor::new(&obj.metadata))
+        .ok()
+        .and_then(|v| v.as_dictionary()?.get("objectIdentifier")?.as_string().map(str::to_owned))
+        .unwrap_or_default();
+    let aads: Vec<(&str, Vec<u8>)> = vec![("metadata", obj.metadata.clone()), ("none", vec![]), ("objectIdentifier", object_id.into_bytes())];
+    let mut layouts: Vec<(String, Vec<u8>, Vec<u8>, Vec<u8>)> = Vec::new(); // (name, iv, tag, ct)
+    for n in [12usize, 16] {
+        if d.len() > n + 16 {
+            layouts.push((format!("nonce{n}|ct|tag"), d[..n].to_vec(), d[d.len() - 16..].to_vec(), d[n..d.len() - 16].to_vec()));
+            layouts.push((format!("nonce{n}|tag|ct"), d[..n].to_vec(), d[n..n + 16].to_vec(), d[n + 16..].to_vec()));
+        }
+    }
+    for (ivn, iv) in [("db-iv", iv), ("zero12", Some(&[0u8; 12][..])), ("zero16", Some(&[0u8; 16][..]))] {
+        let Some(iv) = iv else { continue };
+        if let Some(tag) = tag {
+            layouts.push((format!("{ivn}, db-tag, ct"), iv.to_vec(), tag.to_vec(), d.clone()));
+        }
+        layouts.push((format!("{ivn}, ct|tag"), iv.to_vec(), d[d.len() - 16..].to_vec(), d[..d.len() - 16].to_vec()));
+        layouts.push((format!("{ivn}, tag|ct"), iv.to_vec(), d[..16].to_vec(), d[16..].to_vec()));
+    }
+    let mut found = false;
+    for (kn, k) in &keys {
+        for (an, aad) in &aads {
+            for (ln, iv, tg, ct) in &layouts {
+                if let Some(plain) = notecrypt::gcm_any(k, iv, tg, ct, aad) {
+                    println!("BODY DECRYPTS: {kn}, aad={an}, layout={ln}; {}", kind(&plain));
+                    found = true;
+                }
+            }
+        }
+    }
+    if !found {
+        println!("No v2 body layout matched ({} tried).", keys.len() * aads.len() * layouts.len());
     }
 }

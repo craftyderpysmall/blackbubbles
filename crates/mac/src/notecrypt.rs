@@ -69,10 +69,25 @@ pub fn kek(password: &str, salt: &[u8], iterations: u32) -> [u8; 16] {
 
 /// RFC 3394 AES key unwrap.
 pub fn unwrap_key(kek: &[u8; 16], wrapped: &[u8]) -> Option<Vec<u8>> {
+    unwrap_key_any(kek, wrapped)
+}
+
+/// RFC 3394 AES key unwrap with an AES-128 or AES-256 key-encryption key.
+pub fn unwrap_key_any(kek: &[u8], wrapped: &[u8]) -> Option<Vec<u8>> {
     if wrapped.len() < 24 || wrapped.len() % 8 != 0 {
         return None;
     }
-    let cipher = Aes128::new(GenericArray::from_slice(kek));
+    let decrypt: Box<dyn Fn(&mut [u8; 16])> = match kek.len() {
+        16 => {
+            let c = Aes128::new(GenericArray::from_slice(kek));
+            Box::new(move |b| c.decrypt_block(GenericArray::from_mut_slice(b)))
+        }
+        32 => {
+            let c = aes::Aes256::new(GenericArray::from_slice(kek));
+            Box::new(move |b| c.decrypt_block(GenericArray::from_mut_slice(b)))
+        }
+        _ => return None,
+    };
     let n = wrapped.len() / 8 - 1;
     let mut a = u64::from_be_bytes(wrapped[..8].try_into().unwrap());
     let mut r: Vec<[u8; 8]> = wrapped[8..].chunks(8).map(|c| c.try_into().unwrap()).collect();
@@ -82,8 +97,7 @@ pub fn unwrap_key(kek: &[u8; 16], wrapped: &[u8]) -> Option<Vec<u8>> {
             let mut block = [0u8; 16];
             block[..8].copy_from_slice(&(a ^ t).to_be_bytes());
             block[8..].copy_from_slice(&r[i - 1]);
-            let b = GenericArray::from_mut_slice(&mut block);
-            cipher.decrypt_block(b);
+            decrypt(&mut block);
             a = u64::from_be_bytes(block[..8].try_into().unwrap());
             r[i - 1].copy_from_slice(&block[8..]);
         }
@@ -276,6 +290,146 @@ pub fn pbkdf16(secret: &[u8], salt: &[u8], iterations: u32) -> Vec<u8> {
     out.to_vec()
 }
 
+// --- Cipher version 2 (`ICCryptoEncryptionObject`) -------------------------------------
+//
+// Found in the owner's real database (2026-11-07). The note-data `ZDATA` of a locked note is
+// not raw ciphertext but an NSKeyedArchiver'd `ICCryptoEncryptionObject`:
+//
+// - `unauthenticatedMetadata`: plist {passphraseSalt (32 B), passphraseIterationCount, passphraseHint}
+// - `metadata`: plist {cipherVersion: 2, objectIdentifier: the note's ZIDENTIFIER}
+// - `wrappedEncryptionKey`: 40 B, an RFC 3394-wrapped 256-bit key
+// - `encryptedData`
+//
+// The account's `ICAccountData.ZCRYPTOPASSPHRASEVERIFIER` has the same shape (same salt, its
+// own wrapped key). The 16-byte salt/wrapped key in the note's columns are legacy leftovers.
+// Decryption: KEK = PBKDF2-SHA256(password, passphraseSalt, iterations); key = AES-KW unwrap
+// (integrity-checked, so a wrong password is certain); then AES-GCM over `encryptedData`.
+// Exactly which IV/tag/AAD layout Apple uses isn't documented, so [`decrypt_v2`] tries the
+// plausible ones; each is authenticated by GCM, so a wrong guess can't produce output.
+
+/// The parts of an `ICCryptoEncryptionObject`.
+#[derive(Debug, Clone)]
+pub struct V2Object {
+    pub salt: Vec<u8>,
+    pub iterations: u32,
+    pub wrapped_key: Vec<u8>,
+    /// The raw `metadata` plist bytes (probably the GCM additional data).
+    pub metadata: Vec<u8>,
+    pub data: Vec<u8>,
+}
+
+/// Parse a cipher-version-2 body. `None` if `zdata` isn't one.
+pub fn parse_v2(zdata: &[u8]) -> Option<V2Object> {
+    use plist::Value;
+    if !zdata.starts_with(b"bplist") {
+        return None;
+    }
+    let top = Value::from_reader(std::io::Cursor::new(zdata)).ok()?;
+    let top = top.as_dictionary()?;
+    let objects = top.get("$objects")?.as_array()?;
+    let deref = |v: &Value| -> Option<Value> {
+        match v {
+            Value::Uid(u) => objects.get(u.get() as usize).cloned(),
+            other => Some(other.clone()),
+        }
+    };
+    let root = deref(top.get("$top")?.as_dictionary()?.get("root")?)?;
+    let root = root.as_dictionary()?;
+    let data = |key: &str| deref(root.get(key)?).and_then(|v| v.as_data().map(<[u8]>::to_vec));
+    let unauth = data("unauthenticatedMetadata")?;
+    let unauth = Value::from_reader(std::io::Cursor::new(&unauth)).ok()?;
+    let unauth = unauth.as_dictionary()?;
+    Some(V2Object {
+        salt: unauth.get("passphraseSalt")?.as_data()?.to_vec(),
+        iterations: u32::try_from(unauth.get("passphraseIterationCount")?.as_unsigned_integer()?).ok()?,
+        wrapped_key: data("wrappedEncryptionKey")?,
+        metadata: data("metadata").unwrap_or_default(),
+        data: data("encryptedData")?,
+    })
+}
+
+/// The account's passphrase verifier (`ICAccountData.ZCRYPTOPASSPHRASEVERIFIER`): a small
+/// protobuf (field 1 = date, field 2 → field 5 = plist {key, authenticatedData, metadata}).
+/// Returns (salt, iterations, wrapped key).
+pub fn parse_v2_verifier(blob: &[u8]) -> Option<(Vec<u8>, u32, Vec<u8>)> {
+    use plist::Value;
+    let start = blob.windows(8).position(|w| w == b"bplist00")?;
+    let top = Value::from_reader(std::io::Cursor::new(&blob[start..])).ok()?;
+    let top = top.as_dictionary()?;
+    let meta = top.get("metadata")?.as_data()?;
+    let meta = Value::from_reader(std::io::Cursor::new(meta)).ok()?;
+    let meta = meta.as_dictionary()?;
+    Some((
+        meta.get("passphraseSalt")?.as_data()?.to_vec(),
+        u32::try_from(meta.get("passphraseIterationCount")?.as_unsigned_integer()?).ok()?,
+        top.get("key")?.as_data()?.to_vec(),
+    ))
+}
+
+/// AES-GCM with a 128/256-bit key, 12/16-byte nonce and optional additional data.
+pub fn gcm_any(key: &[u8], iv: &[u8], tag: &[u8], data: &[u8], aad: &[u8]) -> Option<Vec<u8>> {
+    use aes_gcm::aead::consts::U12;
+    if tag.len() != 16 {
+        return None;
+    }
+    let mut sealed = data.to_vec();
+    sealed.extend_from_slice(tag);
+    let payload = Payload { msg: &sealed, aad };
+    macro_rules! open {
+        ($aes:ty, $n:ty) => {
+            AesGcm::<$aes, $n>::new(GenericArray::from_slice(key)).decrypt(GenericArray::from_slice(iv), payload).ok()
+        };
+    }
+    match (key.len(), iv.len()) {
+        (16, 12) => open!(Aes128, U12),
+        (16, 16) => open!(Aes128, U16),
+        (32, 12) => open!(aes::Aes256, U12),
+        (32, 16) => open!(aes::Aes256, U16),
+        _ => None,
+    }
+}
+
+/// Unwrap a v2 key: PBKDF2-SHA256 with a 32- or 16-byte output, then AES-KW.
+pub fn v2_key(password: &str, salt: &[u8], iterations: u32, wrapped: &[u8]) -> Option<(Vec<u8>, &'static str)> {
+    [(32usize, "kek256"), (16, "kek128")].into_iter().find_map(|(len, label)| {
+        let mut kek = vec![0u8; len];
+        pbkdf2::pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, iterations.max(1), &mut kek);
+        unwrap_key_any(&kek, wrapped).map(|k| (k, label))
+    })
+}
+
+/// Decrypt a cipher-version-2 note. `iv`/`tag` are the note-data row's columns, if any.
+pub fn decrypt_v2(obj: &V2Object, iv: Option<&[u8]>, tag: Option<&[u8]>, password: &str) -> Result<(Vec<u8>, String), UnlockError> {
+    let (key, kek) = v2_key(password, &obj.salt, obj.iterations, &obj.wrapped_key).ok_or(UnlockError::WrongPassword)?;
+    let d = &obj.data;
+    let none: &[u8] = &[];
+    let aads: [(&[u8], &str); 2] = [(&obj.metadata, "aad=metadata"), (none, "no-aad")];
+    for (aad, aad_name) in aads {
+        // IV and tag from the database columns.
+        if let (Some(iv), Some(tag)) = (iv, tag)
+            && let Some(p) = gcm_any(&key, iv, tag, d, aad)
+        {
+            return Ok((p, format!("v2 {kek} gcm(db iv/tag, {aad_name})")));
+        }
+        // Nonce in front, tag at the end (CryptoKit's "combined" layout and friends).
+        for n in [12usize, 16] {
+            if d.len() > n + 16
+                && let Some(p) = gcm_any(&key, &d[..n], &d[d.len() - 16..], &d[n..d.len() - 16], aad)
+            {
+                return Ok((p, format!("v2 {kek} gcm(nonce{n}|ct|tag, {aad_name})")));
+            }
+        }
+        // Column IV, tag appended to the data.
+        if let Some(iv) = iv
+            && d.len() > 16
+            && let Some(p) = gcm_any(&key, iv, &d[d.len() - 16..], &d[..d.len() - 16], aad)
+        {
+            return Ok((p, format!("v2 {kek} gcm(db iv, ct|tag, {aad_name})")));
+        }
+    }
+    Err(UnlockError::KeyOnly(format!("v2 {kek}: key unwrapped ({} bytes)", key.len())))
+}
+
 /// Encrypt a body the way Notes does (test fixtures only). Returns (wrapped key, IV, tag, data).
 #[cfg(test)]
 pub(crate) fn encrypt_for_test(password: &str, salt: &[u8], iterations: u32, body: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
@@ -357,6 +511,84 @@ mod tests {
         bad[0] ^= 1;
         let broken = Locked { data: &bad, ..note };
         assert!(matches!(decrypt(&broken, Some(&account), "pw").unwrap_err(), UnlockError::KeyOnly(_)));
+    }
+
+    fn wrap_key_256(kek: &[u8], key: &[u8]) -> Vec<u8> {
+        use aes::cipher::BlockEncrypt;
+        let cipher = aes::Aes256::new(GenericArray::from_slice(kek));
+        let n = key.len() / 8;
+        let mut a = KW_IV;
+        let mut r: Vec<[u8; 8]> = key.chunks(8).map(|c| c.try_into().unwrap()).collect();
+        for j in 0..6 {
+            for i in 1..=n {
+                let mut block = [0u8; 16];
+                block[..8].copy_from_slice(&a.to_be_bytes());
+                block[8..].copy_from_slice(&r[i - 1]);
+                cipher.encrypt_block(GenericArray::from_mut_slice(&mut block));
+                a = u64::from_be_bytes(block[..8].try_into().unwrap()) ^ (n * j + i) as u64;
+                r[i - 1].copy_from_slice(&block[8..]);
+            }
+        }
+        let mut out = a.to_be_bytes().to_vec();
+        out.extend(r.concat());
+        out
+    }
+
+    fn bplist(v: plist::Value) -> Vec<u8> {
+        let mut out = Vec::new();
+        v.to_writer_binary(&mut out).unwrap();
+        out
+    }
+
+    /// The owner's cipher-version-2 layout: an NSKeyedArchiver'd ICCryptoEncryptionObject.
+    #[test]
+    fn cipher_v2_object() {
+        use plist::{Dictionary, Uid, Value};
+        let salt = [4u8; 32];
+        let mut kek = [0u8; 32];
+        pbkdf2::pbkdf2_hmac::<Sha256>(b"pw", &salt, 50, &mut kek);
+        let key = [8u8; 32];
+        let wrapped = wrap_key_256(&kek, &key);
+        let metadata = bplist(Value::Dictionary(Dictionary::from_iter([
+            ("cipherVersion".to_string(), Value::Integer(2.into())),
+            ("objectIdentifier".to_string(), Value::String("NOTE-ID".into())),
+        ])));
+        let unauth = bplist(Value::Dictionary(Dictionary::from_iter([
+            ("passphraseSalt".to_string(), Value::Data(salt.to_vec())),
+            ("passphraseIterationCount".to_string(), Value::Integer(50.into())),
+            ("passphraseHint".to_string(), Value::String(String::new())),
+        ])));
+        let iv = [5u8; 16];
+        let cipher = AesGcm::<aes::Aes256, U16>::new(GenericArray::from_slice(&key));
+        let mut sealed = cipher.encrypt(Nonce::<U16>::from_slice(&iv), Payload { msg: b"v2 body", aad: &metadata }).unwrap();
+        let tag = sealed.split_off(sealed.len() - 16);
+        let root = Value::Dictionary(Dictionary::from_iter([
+            ("metadata".to_string(), Value::Uid(Uid::new(3))),
+            ("unauthenticatedMetadata".to_string(), Value::Uid(Uid::new(2))),
+            ("wrappedEncryptionKey".to_string(), Value::Uid(Uid::new(4))),
+            ("encryptedData".to_string(), Value::Uid(Uid::new(5))),
+        ]));
+        let archive = bplist(Value::Dictionary(Dictionary::from_iter([
+            ("$archiver".to_string(), Value::String("NSKeyedArchiver".into())),
+            ("$top".to_string(), Value::Dictionary(Dictionary::from_iter([("root".to_string(), Value::Uid(Uid::new(1)))]))),
+            (
+                "$objects".to_string(),
+                Value::Array(vec![
+                    Value::String("$null".into()),
+                    root,
+                    Value::Data(unauth),
+                    Value::Data(metadata),
+                    Value::Data(wrapped),
+                    Value::Data(sealed),
+                ]),
+            ),
+        ])));
+        let obj = parse_v2(&archive).expect("parses");
+        assert_eq!((obj.salt.len(), obj.iterations, obj.wrapped_key.len()), (32, 50, 40));
+        let (body, how) = decrypt_v2(&obj, Some(&iv), Some(&tag), "pw").unwrap();
+        assert_eq!((body.as_slice(), how.as_str()), (b"v2 body".as_slice(), "v2 kek256 gcm(db iv/tag, aad=metadata)"));
+        assert_eq!(decrypt_v2(&obj, Some(&iv), Some(&tag), "nope").unwrap_err(), UnlockError::WrongPassword);
+        assert!(parse_v2(b"not a plist").is_none());
     }
 
     #[test]

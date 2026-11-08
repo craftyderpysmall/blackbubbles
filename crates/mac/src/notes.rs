@@ -130,7 +130,10 @@ fn field(buf: &[u8], number: u64) -> Option<&[u8]> {
 
 pub fn decode_body(zdata: &[u8]) -> Option<String> {
     let mut raw = Vec::new();
-    flate2::read::GzDecoder::new(zdata).read_to_end(&mut raw).ok()?;
+    // Gzipped protobuf as stored; a decrypted body may also come un-gzipped.
+    if flate2::read::GzDecoder::new(zdata).read_to_end(&mut raw).is_err() {
+        raw = zdata.to_vec();
+    }
     let text = field(field(field(&raw, 2)?, 3)?, 2)?;
     Some(String::from_utf8_lossy(text).replace('\u{fffc}', ""))
 }
@@ -325,6 +328,26 @@ impl Notes {
                 .query_row(&sql, [pk], |r| Ok(((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?), (r.get(6)?, r.get(7)?))))
                 .map_err(sql_err)?;
             let missing = || ApiError::unsupported("This note's encryption isn't readable here (it may be locked with your device passcode). Open it on your iPhone or Mac.");
+            // Cipher version 2: the body is an ICCryptoEncryptionObject carrying its own salt
+            // and wrapped key (see notecrypt).
+            if let Some(obj) = data.as_deref().and_then(crate::notecrypt::parse_v2) {
+                let (plain, how) = crate::notecrypt::decrypt_v2(&obj, iv.as_deref(), tag.as_deref(), password).map_err(|e| match e {
+                    crate::notecrypt::UnlockError::WrongPassword => ApiError::new(ErrorCode::PermissionDenied, "Wrong password."),
+                    crate::notecrypt::UnlockError::KeyOnly(how) => {
+                        eprintln!("notes: unlock {id}: {how}, but no body layout decrypted");
+                        ApiError::unsupported(
+                            "Your password is correct and the note's key unlocked, but its text didn't decrypt. BlackBubbles can't read this note yet.",
+                        )
+                    }
+                    _ => missing(),
+                })?;
+                eprintln!("notes: unlock {id}: decrypted via {how}");
+                let body = decode_body(&plain).ok_or_else(|| {
+                    eprintln!("notes: unlock {id}: decrypted {} bytes but they aren't a note body (starts {:02x?})", plain.len(), &plain[..plain.len().min(4)]);
+                    ApiError::unsupported("The note decrypted, but its contents are in a format BlackBubbles can't read yet.")
+                })?;
+                return Ok(Response::Note(Note { summary, body }));
+            }
             let (Some(salt), Some(iterations), Some(wrapped), Some(iv), Some(tag), Some(data)) = (salt, iterations, wrapped, iv, tag, data) else {
                 return Err(missing());
             };
