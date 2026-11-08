@@ -87,6 +87,129 @@ fn xdg_notify(summary: &str, body: &str, action: Option<&str>, timeout_secs: u64
     clicked
 }
 
+// --- Pasting files into Messages ------------------------------------------------------
+
+/// A file on the clipboard, for pasting into a chat.
+pub struct PastedFile {
+    pub name: String,
+    pub data: Vec<u8>,
+}
+
+/// Image types a chat can take, best first, with the extension for the file name.
+#[cfg(not(target_os = "macos"))]
+const PASTE_IMAGES: &[(&str, &str)] = &[
+    ("image/png", "png"),
+    ("image/jpeg", "jpg"),
+    ("image/gif", "gif"),
+    ("image/webp", "webp"),
+    ("image/heic", "heic"),
+    ("image/tiff", "tiff"),
+    ("image/bmp", "bmp"),
+];
+
+/// Largest file taken from the clipboard (Messages' own attachment limit is about this).
+#[cfg(not(target_os = "macos"))]
+const PASTE_MAX: u64 = 100 * 1024 * 1024;
+
+/// Files copied in a file manager (`text/uri-list` with `file://` URIs), or else one image
+/// (a screenshot, "Copy Image" in a browser). Empty if neither, or a password manager owns
+/// the clipboard. WebKitGTK doesn't hand clipboard images to the page, hence this.
+pub fn clipboard_files() -> Vec<PastedFile> {
+    #[cfg(target_os = "macos")]
+    return macos_clipboard_image().into_iter().collect();
+    #[cfg(not(target_os = "macos"))]
+    {
+        type Get = fn(&str) -> Option<Vec<u8>>;
+        let (list, get): (Vec<&str>, Get) =
+            if std::env::var_os("WAYLAND_DISPLAY").is_some() && which("wl-paste") {
+                (vec!["wl-paste", "--list-types"], |mime| output(Command::new("wl-paste").args(["--no-newline", "--type", mime])))
+            } else if which("xclip") {
+                (vec!["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"], |mime| {
+                    output(Command::new("xclip").args(["-selection", "clipboard", "-t", mime, "-o"]))
+                })
+            } else {
+                return Vec::new();
+            };
+        let Some(types) = output(Command::new(list[0]).args(&list[1..])).and_then(|t| String::from_utf8(t).ok()) else {
+            return Vec::new();
+        };
+        let types: Vec<&str> = types.lines().map(str::trim).collect();
+        if types.contains(&"x-kde-passwordManagerHint") {
+            return Vec::new();
+        }
+        if types.contains(&"text/uri-list") {
+            let files: Vec<PastedFile> = get("text/uri-list")
+                .and_then(|t| String::from_utf8(t).ok())
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| line.trim().strip_prefix("file://").map(percent_decode))
+                .filter_map(|path| read_pasted(std::path::Path::new(&path)))
+                .collect();
+            if !files.is_empty() {
+                return files;
+            }
+        }
+        PASTE_IMAGES
+            .iter()
+            .find(|(mime, _)| types.contains(mime))
+            .and_then(|(mime, ext)| get(mime).map(|data| PastedFile { name: format!("Pasted image.{ext}"), data }))
+            .filter(|f| !f.data.is_empty())
+            .into_iter()
+            .collect()
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_pasted(path: &std::path::Path) -> Option<PastedFile> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > PASTE_MAX {
+        return None;
+    }
+    Some(PastedFile { name: path.file_name()?.to_string_lossy().into_owned(), data: std::fs::read(path).ok()? })
+}
+
+/// `%20` → space, etc. (file URIs from file managers).
+#[cfg(not(target_os = "macos"))]
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2]))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// macOS: the clipboard as PNG, via AppleScript (`«data PNGf89504E…»`).
+#[cfg(target_os = "macos")]
+fn macos_clipboard_image() -> Option<PastedFile> {
+    let out = output(Command::new("/usr/bin/osascript").args(["-e", "the clipboard as «class PNGf»"]))?;
+    let text = String::from_utf8(out).ok()?;
+    let hex = text.trim().strip_prefix("«data PNGf")?.strip_suffix('»')?;
+    let data: Option<Vec<u8>> = (0..hex.len() / 2).map(|i| u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()).collect();
+    Some(PastedFile { name: "Pasted image.png".into(), data: data? })
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod paste_tests {
+    #[test]
+    fn percent_decoding() {
+        assert_eq!(super::percent_decode("/home/a/My%20Pics/caf%C3%A9.png"), "/home/a/My Pics/café.png");
+        assert_eq!(super::percent_decode("/x/100%"), "/x/100%");
+        assert_eq!(super::percent_decode("/x/%2"), "/x/%2");
+    }
+}
+
 // --- Wayland --------------------------------------------------------------------------
 
 pub struct Wayland;

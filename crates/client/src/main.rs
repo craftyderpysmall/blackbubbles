@@ -213,6 +213,8 @@ fn run_gui(runtime: &tokio::runtime::Runtime, state: commands::AppState) -> Resu
             commands::bootstrap,
             commands::request,
             commands::send_attachment,
+            commands::clipboard_files,
+            commands::clipboard_file,
             commands::save_blob,
             commands::save_blob_as,
             commands::pair,

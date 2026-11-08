@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowLeft, ArrowUp, Bell, BellOff, Download, Maximize2, File as FileIcon, Mail, MessageCircle, Paperclip, Phone, RotateCw, Upload } from "lucide-react";
+import { ArrowLeft, ArrowUp, Bell, BellOff, Download, Maximize2, File as FileIcon, Mail, MessageCircle, Paperclip, Phone, RotateCw, Upload, X } from "lucide-react";
 import { api, blobUrl, errorText, native, saveAs, type Attachment, type Chat } from "@/lib/bb";
 import { ContextMenu as CM } from "radix-ui";
 import { addToThread, keys, type LocalMessage, type ThreadData } from "@/lib/events";
@@ -260,7 +260,35 @@ function Thread({ chat, onBack }: { chat: Chat; onBack?: () => void }) {
     if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   };
 
+  // Pasted images wait above the composer and go out with Send, so a stray paste can't.
+  const [staged, setStaged] = useState<File[]>([]);
+  const stage = (files: File[]) => setStaged((s) => [...s, ...files]);
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData.files);
+    if (files.length) {
+      e.preventDefault();
+      stage(files);
+      return;
+    }
+    // WebKitGTK doesn't expose clipboard images to the page: when there's no plain text
+    // (an image), or the text is a copied file's URI, read the clipboard natively.
+    const types = Array.from(e.clipboardData.types);
+    const uri = e.clipboardData.getData("text/uri-list");
+    const image = types.some((t) => t.startsWith("image/") || t === "Files");
+    if (types.includes("text/plain") && !image && !uri.startsWith("file://")) return;
+    e.preventDefault();
+    native.clipboardFiles().then(
+      (found) => (found.length ? stage(found) : toast("Nothing on the clipboard that can be sent")),
+      (err) => toast(`Couldn't paste: ${errorText(err)}`),
+    );
+  };
+
   const send = async () => {
+    if (staged.length) {
+      atBottom.current = true;
+      sendFiles(staged);
+      setStaged([]);
+    }
     const text = draft.trim();
     if (!text) return;
     setDraft("");
@@ -372,11 +400,18 @@ function Thread({ chat, onBack }: { chat: Chat; onBack?: () => void }) {
         )}
       </div>
 
-      <div className="flex items-end gap-2 border-t border-border p-3">
+      {staged.length > 0 && (
+        <div className="flex gap-2 overflow-x-auto border-t border-border px-3 pt-3">
+          {staged.map((file, i) => (
+            <StagedFile key={`${i}-${file.name}`} file={file} onRemove={() => setStaged((s) => s.filter((_, j) => j !== i))} />
+          ))}
+        </div>
+      )}
+      <div className={cn("flex items-end gap-2 p-3", !staged.length && "border-t border-border")}>
         <input ref={fileInput} type="file" multiple hidden onChange={(e) => e.target.files && (sendFiles(e.target.files), (e.target.value = ""))} />
         <IconButton icon={Paperclip} label="Attach files" onClick={() => fileInput.current?.click()} />
-        <AutoTextarea value={draft} onChange={setDraft} onSubmit={send} placeholder={chat.service === "IMessage" ? "iMessage" : "Text message"} />
-        <IconButton icon={ArrowUp} label="Send" variant="primary" disabled={!draft.trim()} onClick={send} />
+        <AutoTextarea value={draft} onChange={setDraft} onSubmit={send} onPaste={onPaste} placeholder={chat.service === "IMessage" ? "iMessage" : "Text message"} />
+        <IconButton icon={ArrowUp} label="Send" variant="primary" disabled={!draft.trim() && !staged.length} onClick={send} />
       </div>
 
       {dragging && (
@@ -392,7 +427,34 @@ function Thread({ chat, onBack }: { chat: Chat; onBack?: () => void }) {
   );
 }
 
-function AutoTextarea({ value, onChange, onSubmit, placeholder }: { value: string; onChange: (v: string) => void; onSubmit: () => void; placeholder: string }) {
+/** A pasted file waiting to be sent: a thumbnail for images, else its name. */
+function StagedFile({ file, onRemove }: { file: File; onRemove: () => void }) {
+  const url = useMemo(() => (file.type.startsWith("image/") ? URL.createObjectURL(file) : null), [file]);
+  useEffect(() => () => {
+    if (url) URL.revokeObjectURL(url);
+  }, [url]);
+  return (
+    <div className="group relative shrink-0 animate-enter">
+      {url ? (
+        <img src={url} alt={file.name} className="size-16 rounded-control border border-border object-cover" />
+      ) : (
+        <div className="flex h-16 max-w-48 items-center gap-2 rounded-control border border-border bg-raised px-3 text-xs text-muted">
+          <FileIcon className="size-4 shrink-0" />
+          <span className="truncate">{file.name}</span>
+        </div>
+      )}
+      <button
+        aria-label={`Remove ${file.name}`}
+        onClick={onRemove}
+        className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full border border-border-strong bg-surface text-fg shadow-lg transition-colors hover:bg-raised"
+      >
+        <X className="size-3" />
+      </button>
+    </div>
+  );
+}
+
+function AutoTextarea({ value, onChange, onSubmit, onPaste, placeholder }: { value: string; onChange: (v: string) => void; onSubmit: () => void; onPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void; placeholder: string }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
     const el = ref.current;
@@ -408,6 +470,7 @@ function AutoTextarea({ value, onChange, onSubmit, placeholder }: { value: strin
       value={value}
       placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
+      onPaste={onPaste}
       onKeyDown={(e) => {
         if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
           e.preventDefault();

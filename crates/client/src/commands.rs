@@ -33,6 +33,8 @@ pub struct AppState {
     pub blobs: Blobs,
     audio: Audio,
     notifier: Mutex<Option<Arc<Notifier>>>,
+    /// Files read by the last `clipboard_files`, fetched one by one by `clipboard_file`.
+    pasted: Mutex<Vec<bb_autofill::platform::PastedFile>>,
 }
 
 impl AppState {
@@ -55,6 +57,7 @@ impl AppState {
             blobs: Blobs::new(),
             audio: Audio::new(),
             notifier: Mutex::default(),
+            pasted: Mutex::default(),
             rt,
         }
     }
@@ -221,6 +224,31 @@ pub async fn send_attachment(state: State<'_, AppState>, request: tauri::ipc::Re
         Response::Ok | Response::Created { .. } => Ok(()),
         other => Err(ApiError::internal(format!("unexpected reply {other:?}"))),
     }
+}
+
+#[derive(serde::Serialize)]
+pub struct ClipboardFile {
+    name: String,
+    size: usize,
+}
+
+/// Images (or copied files) on the system clipboard, for pasting into a chat. WebKitGTK
+/// doesn't give pasted images to the page, so the app reads the clipboard itself. The
+/// bytes stay here until `clipboard_file` fetches them.
+#[tauri::command]
+pub async fn clipboard_files(state: State<'_, AppState>) -> Result<Vec<ClipboardFile>, String> {
+    let files = tokio::task::spawn_blocking(bb_autofill::platform::clipboard_files).await.map_err(|e| e.to_string())?;
+    let list = files.iter().map(|f| ClipboardFile { name: f.name.clone(), size: f.data.len() }).collect();
+    *state.pasted.lock().unwrap() = files;
+    Ok(list)
+}
+
+/// The bytes of file `index` from the last `clipboard_files`, as a raw (non-JSON) reply.
+#[tauri::command]
+pub fn clipboard_file(state: State<'_, AppState>, index: usize) -> Result<tauri::ipc::Response, String> {
+    let mut pasted = state.pasted.lock().unwrap();
+    let file = pasted.get_mut(index).ok_or("no such clipboard file")?;
+    Ok(tauri::ipc::Response::new(std::mem::take(&mut file.data)))
 }
 
 /// Download a blob into ~/Downloads; returns the saved path.

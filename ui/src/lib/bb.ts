@@ -299,8 +299,21 @@ export const api = {
   diagnose: () => call<string, "Diagnostics">("Diagnose", "Diagnostics"),
 };
 
+const IMAGE_TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", heic: "image/heic", tiff: "image/tiff", bmp: "image/bmp" };
+
 export const native = {
   bootstrap: () => invoke<Bootstrap>("bootstrap"),
+  /** Images or copied files on the system clipboard (WebKitGTK doesn't hand them to paste events). */
+  clipboardFiles: async (): Promise<File[]> => {
+    const list = await invoke<{ name: string; size: number }[]>("clipboard_files");
+    return Promise.all(
+      list.map(async (f, index) => {
+        const data = await invoke<ArrayBuffer>("clipboard_file", { index });
+        const ext = f.name.split(".").pop()?.toLowerCase() ?? "";
+        return new File([data], f.name, { type: IMAGE_TYPES[ext] ?? "" });
+      }),
+    );
+  },
   pair: (uri: string, name: string) => invoke<ConfigView>("pair", { uri, name }),
   saveNotifications: (notifications: Notifications) => invoke<ConfigView>("save_notifications", { notifications }),
   saveServices: (services: Services) => invoke<ConfigView>("save_services", { services }),
