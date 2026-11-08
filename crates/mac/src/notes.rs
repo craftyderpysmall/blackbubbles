@@ -333,6 +333,9 @@ impl Notes {
             if let Some(obj) = data.as_deref().and_then(crate::notecrypt::parse_v2) {
                 let (plain, how) = crate::notecrypt::decrypt_v2(&obj, iv.as_deref(), tag.as_deref(), password).map_err(|e| match e {
                     crate::notecrypt::UnlockError::WrongPassword => ApiError::new(ErrorCode::PermissionDenied, "Wrong password."),
+                    crate::notecrypt::UnlockError::DevicePasscode => ApiError::unsupported(
+                        "This note is locked with your iPhone or Mac passcode. Its key is kept in Apple's keychain, which only the Notes app can use, so open it on your iPhone or Mac.",
+                    ),
                     crate::notecrypt::UnlockError::KeyOnly(how) => {
                         eprintln!("notes: unlock {id}: {how}, but no body layout decrypted");
                         ApiError::unsupported(
@@ -402,7 +405,7 @@ impl Notes {
                         "Your password is correct and the note's key unlocked, but its text didn't decrypt. BlackBubbles can't read this note yet.",
                     )
                 }
-                crate::notecrypt::UnlockError::Corrupt => missing(),
+                crate::notecrypt::UnlockError::Corrupt | crate::notecrypt::UnlockError::DevicePasscode => missing(),
             })?;
             eprintln!("notes: unlock {id}: decrypted via {how}");
             let body = decode_body(&plain).ok_or_else(missing)?;

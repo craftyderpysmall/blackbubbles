@@ -38,6 +38,8 @@ pub enum UnlockError {
     Unsupported,
     /// A GCM-wrapped note key authenticated (named construction), but the body didn't.
     KeyOnly(String),
+    /// Locked with the device passcode: the key lives in Notes' Keychain, out of reach.
+    DevicePasscode,
     Corrupt,
 }
 
@@ -304,8 +306,13 @@ pub fn pbkdf16(secret: &[u8], salt: &[u8], iterations: u32) -> Vec<u8> {
 // own wrapped key). The 16-byte salt/wrapped key in the note's columns are legacy leftovers.
 // Decryption: KEK = PBKDF2-SHA256(password, passphraseSalt, iterations); key = AES-KW unwrap
 // (integrity-checked, so a wrong password is certain); then AES-GCM over `encryptedData`.
-// Exactly which IV/tag/AAD layout Apple uses isn't documented, so [`decrypt_v2`] tries the
-// plausible ones; each is authenticated by GCM, so a wrong guess can't produce output.
+// Body: AES-256-GCM over `encryptedData` = ciphertext | IV (32 B) | tag (16 B), with the raw
+// `metadata` bytes as additional data; the plaintext is the usual gzipped protobuf. Apple
+// calls this "Cipher v1 Neo" (cipherVersion 2). Layout from 6over3/NotesKit's
+// docs/encryption-research.md (confirmed by memrynote/memry's importer); the KEK/DEK test
+// vector below is from that document. Other layouts are still tried, each authenticated.
+// If `metadata` has an `accountKeyIdentifier`, the note key is wrapped by a Keychain key
+// (device-passcode mode, "V2") and can't be opened outside Notes.
 
 /// The parts of an `ICCryptoEncryptionObject`.
 #[derive(Debug, Clone)]
@@ -317,6 +324,9 @@ pub struct V2Object {
     pub metadata: Vec<u8>,
     /// The raw `unauthenticatedMetadata` plist bytes.
     pub unauthenticated_metadata: Vec<u8>,
+    /// `metadata` names an `accountKeyIdentifier`: the key is wrapped by a Keychain key
+    /// (device-passcode mode), not by the password.
+    pub account_key: bool,
     pub data: Vec<u8>,
 }
 
@@ -347,6 +357,10 @@ pub fn parse_v2(zdata: &[u8]) -> Option<V2Object> {
         wrapped_key: data("wrappedEncryptionKey")?,
         metadata: data("metadata").unwrap_or_default(),
         unauthenticated_metadata: unauth_raw.clone(),
+        account_key: data("metadata")
+            .and_then(|m| Value::from_reader(std::io::Cursor::new(m)).ok())
+            .and_then(|m| m.as_dictionary().map(|d| d.contains_key("accountKeyIdentifier")))
+            .unwrap_or(false),
         data: data("encryptedData")?,
     })
 }
@@ -383,11 +397,15 @@ pub fn gcm_any(key: &[u8], iv: &[u8], tag: &[u8], data: &[u8], aad: &[u8]) -> Op
             AesGcm::<$aes, $n>::new(GenericArray::from_slice(key)).decrypt(GenericArray::from_slice(iv), payload).ok()
         };
     }
+    use aes_gcm::aead::consts::U32;
     match (key.len(), iv.len()) {
         (16, 12) => open!(Aes128, U12),
         (16, 16) => open!(Aes128, U16),
+        (16, 32) => open!(Aes128, U32),
         (32, 12) => open!(aes::Aes256, U12),
         (32, 16) => open!(aes::Aes256, U16),
+        // "Cipher v1 Neo": CryptoKit accepts 32-byte GCM nonces.
+        (32, 32) => open!(aes::Aes256, U32),
         _ => None,
     }
 }
@@ -403,8 +421,19 @@ pub fn v2_key(password: &str, salt: &[u8], iterations: u32, wrapped: &[u8]) -> O
 
 /// Decrypt a cipher-version-2 note. `iv`/`tag` are the note-data row's columns, if any.
 pub fn decrypt_v2(obj: &V2Object, iv: Option<&[u8]>, tag: Option<&[u8]>, password: &str) -> Result<(Vec<u8>, String), UnlockError> {
+    if obj.account_key {
+        // Keyed to the device passcode via the Data Protection Keychain, which only Notes
+        // itself may read; the password only checks the account verifier.
+        return Err(UnlockError::DevicePasscode);
+    }
     let (key, kek) = v2_key(password, &obj.salt, obj.iterations, &obj.wrapped_key).ok_or(UnlockError::WrongPassword)?;
     let d = &obj.data;
+    // The documented layout: ciphertext | IV (32 B) | tag (16 B), AAD = the raw metadata.
+    if d.len() > 48
+        && let Some(p) = gcm_any(&key, &d[d.len() - 48..d.len() - 16], &d[d.len() - 16..], &d[..d.len() - 48], &obj.metadata)
+    {
+        return Ok((p, format!("v1-neo {kek} gcm(ct|iv32|tag, aad=metadata)")));
+    }
     let none: &[u8] = &[];
     let aads: [(&[u8], &str); 2] = [(&obj.metadata, "aad=metadata"), (none, "no-aad")];
     for (aad, aad_name) in aads {
@@ -561,10 +590,13 @@ mod tests {
             ("passphraseIterationCount".to_string(), Value::Integer(50.into())),
             ("passphraseHint".to_string(), Value::String(String::new())),
         ])));
-        let iv = [5u8; 16];
-        let cipher = AesGcm::<aes::Aes256, U16>::new(GenericArray::from_slice(&key));
-        let mut sealed = cipher.encrypt(Nonce::<U16>::from_slice(&iv), Payload { msg: b"v2 body", aad: &metadata }).unwrap();
+        // ciphertext | IV (32) | tag (16), as Notes stores it.
+        let iv = [5u8; 32];
+        let cipher = AesGcm::<aes::Aes256, aes_gcm::aead::consts::U32>::new(GenericArray::from_slice(&key));
+        let mut sealed = cipher.encrypt(GenericArray::from_slice(&iv), Payload { msg: b"v2 body", aad: &metadata }).unwrap();
         let tag = sealed.split_off(sealed.len() - 16);
+        sealed.extend_from_slice(&iv);
+        sealed.extend_from_slice(&tag);
         let root = Value::Dictionary(Dictionary::from_iter([
             ("metadata".to_string(), Value::Uid(Uid::new(3))),
             ("unauthenticatedMetadata".to_string(), Value::Uid(Uid::new(2))),
@@ -588,10 +620,24 @@ mod tests {
         ])));
         let obj = parse_v2(&archive).expect("parses");
         assert_eq!((obj.salt.len(), obj.iterations, obj.wrapped_key.len()), (32, 50, 40));
-        let (body, how) = decrypt_v2(&obj, Some(&iv), Some(&tag), "pw").unwrap();
-        assert_eq!((body.as_slice(), how.as_str()), (b"v2 body".as_slice(), "v2 kek256 gcm(db iv/tag, aad=metadata)"));
-        assert_eq!(decrypt_v2(&obj, Some(&iv), Some(&tag), "nope").unwrap_err(), UnlockError::WrongPassword);
+        let (body, how) = decrypt_v2(&obj, None, None, "pw").unwrap();
+        assert_eq!((body.as_slice(), how.as_str()), (b"v2 body".as_slice(), "v1-neo kek256 gcm(ct|iv32|tag, aad=metadata)"));
+        assert_eq!(decrypt_v2(&obj, None, None, "nope").unwrap_err(), UnlockError::WrongPassword);
+        let passcode = V2Object { account_key: true, ..obj };
+        assert_eq!(decrypt_v2(&passcode, None, None, "pw").unwrap_err(), UnlockError::DevicePasscode);
         assert!(parse_v2(b"not a plist").is_none());
+    }
+
+    /// KEK and key unwrap from NotesKit's published v1-Neo test note ("Needleinahaystack").
+    #[test]
+    fn v1_neo_published_vector() {
+        let salt = hex("1faf405b502ebdb2796842e6217fa4ca274b69ac1efae128bb09dfb04989c96d");
+        let wrapped = hex("3e7cc8825082cd508d4f51328a287b4df4c3763eb20bacd6748adc956d44d82071f34b4039c90fe5");
+        let mut kek = [0u8; 32];
+        pbkdf2::pbkdf2_hmac::<Sha256>(b"jjkhehe", &salt, 20000, &mut kek);
+        assert_eq!(kek.to_vec(), hex("66c2ed1de7e3e94b63a39048edbb540b375b364ce9ffedce93d7dee4f930d576"));
+        let (dek, how) = v2_key("jjkhehe", &salt, 20000, &wrapped).unwrap();
+        assert_eq!((dek, how), (hex("e1d12f49ace8816f7334da221f0f7f149a266d6386de576b4d59a395d78afba2"), "kek256"));
     }
 
     #[test]
