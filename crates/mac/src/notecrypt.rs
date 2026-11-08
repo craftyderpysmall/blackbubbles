@@ -315,6 +315,8 @@ pub struct V2Object {
     pub wrapped_key: Vec<u8>,
     /// The raw `metadata` plist bytes (probably the GCM additional data).
     pub metadata: Vec<u8>,
+    /// The raw `unauthenticatedMetadata` plist bytes.
+    pub unauthenticated_metadata: Vec<u8>,
     pub data: Vec<u8>,
 }
 
@@ -336,14 +338,15 @@ pub fn parse_v2(zdata: &[u8]) -> Option<V2Object> {
     let root = deref(top.get("$top")?.as_dictionary()?.get("root")?)?;
     let root = root.as_dictionary()?;
     let data = |key: &str| deref(root.get(key)?).and_then(|v| v.as_data().map(<[u8]>::to_vec));
-    let unauth = data("unauthenticatedMetadata")?;
-    let unauth = Value::from_reader(std::io::Cursor::new(&unauth)).ok()?;
+    let unauth_raw = data("unauthenticatedMetadata")?;
+    let unauth = Value::from_reader(std::io::Cursor::new(&unauth_raw)).ok()?;
     let unauth = unauth.as_dictionary()?;
     Some(V2Object {
         salt: unauth.get("passphraseSalt")?.as_data()?.to_vec(),
         iterations: u32::try_from(unauth.get("passphraseIterationCount")?.as_unsigned_integer()?).ok()?,
         wrapped_key: data("wrappedEncryptionKey")?,
         metadata: data("metadata").unwrap_or_default(),
+        unauthenticated_metadata: unauth_raw.clone(),
         data: data("encryptedData")?,
     })
 }

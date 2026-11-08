@@ -253,7 +253,18 @@ fn probe_v2(obj: &notecrypt::V2Object, blobs: &Blobs, password: &str) {
         .ok()
         .and_then(|v| v.as_dictionary()?.get("objectIdentifier")?.as_string().map(str::to_owned))
         .unwrap_or_default();
-    let aads: Vec<(&str, Vec<u8>)> = vec![("metadata", obj.metadata.clone()), ("none", vec![]), ("objectIdentifier", object_id.into_bytes())];
+    let unauth = obj.unauthenticated_metadata.clone();
+    let mut both = obj.metadata.clone();
+    both.extend_from_slice(&unauth);
+    let aads: Vec<(&str, Vec<u8>)> = vec![
+        ("metadata", obj.metadata.clone()),
+        ("none", vec![]),
+        ("objectIdentifier", object_id.clone().into_bytes()),
+        ("objectIdentifier-lower", object_id.to_lowercase().into_bytes()),
+        ("unauthenticatedMetadata", unauth.clone()),
+        ("metadata+unauth", both),
+        ("sha256(metadata)", notecrypt::sha16(&[&obj.metadata]).to_vec()),
+    ];
     let mut layouts: Vec<(String, Vec<u8>, Vec<u8>, Vec<u8>)> = Vec::new(); // (name, iv, tag, ct)
     for n in [12usize, 16] {
         if d.len() > n + 16 {
@@ -261,7 +272,8 @@ fn probe_v2(obj: &notecrypt::V2Object, blobs: &Blobs, password: &str) {
             layouts.push((format!("nonce{n}|tag|ct"), d[..n].to_vec(), d[n..n + 16].to_vec(), d[n + 16..].to_vec()));
         }
     }
-    for (ivn, iv) in [("db-iv", iv), ("zero12", Some(&[0u8; 12][..])), ("zero16", Some(&[0u8; 16][..]))] {
+    let iv12 = iv.map(|v| v[..12.min(v.len())].to_vec());
+    for (ivn, iv) in [("db-iv", iv), ("db-iv[..12]", iv12.as_deref()), ("zero12", Some(&[0u8; 12][..])), ("zero16", Some(&[0u8; 16][..]))] {
         let Some(iv) = iv else { continue };
         if let Some(tag) = tag {
             layouts.push((format!("{ivn}, db-tag, ct"), iv.to_vec(), tag.to_vec(), d.clone()));
@@ -274,7 +286,11 @@ fn probe_v2(obj: &notecrypt::V2Object, blobs: &Blobs, password: &str) {
         for (an, aad) in &aads {
             for (ln, iv, tg, ct) in &layouts {
                 if let Some(plain) = notecrypt::gcm_any(k, iv, tg, ct, aad) {
-                    println!("BODY DECRYPTS: {kn}, aad={an}, layout={ln}; {}", kind(&plain));
+                    println!("BODY DECRYPTS: AES-GCM {kn}, aad={an}, layout={ln}; {}", kind(&plain));
+                    found = true;
+                }
+                if let Some(plain) = chacha(k, iv, tg, ct, aad) {
+                    println!("BODY DECRYPTS: ChaCha20-Poly1305 {kn}, aad={an}, layout={ln}; {}", kind(&plain));
                     found = true;
                 }
             }
@@ -283,4 +299,16 @@ fn probe_v2(obj: &notecrypt::V2Object, blobs: &Blobs, password: &str) {
     if !found {
         println!("No v2 body layout matched ({} tried).", keys.len() * aads.len() * layouts.len());
     }
+}
+
+/// ChaCha20-Poly1305 (CryptoKit's ChaChaPoly): 256-bit key, 12-byte nonce, 16-byte tag.
+fn chacha(key: &[u8], nonce: &[u8], tag: &[u8], ct: &[u8], aad: &[u8]) -> Option<Vec<u8>> {
+    use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+    if key.len() != 32 || nonce.len() != 12 || tag.len() != 16 {
+        return None;
+    }
+    let cipher = chacha20poly1305::ChaCha20Poly1305::new_from_slice(key).ok()?;
+    let mut sealed = ct.to_vec();
+    sealed.extend_from_slice(tag);
+    cipher.decrypt(chacha20poly1305::Nonce::from_slice(nonce), Payload { msg: &sealed, aad }).ok()
 }
